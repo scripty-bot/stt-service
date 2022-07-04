@@ -30,6 +30,7 @@ async fn main() {
             s = socket.accept() => s,
             _ = tokio::signal::ctrl_c() => break,
         };
+        debug!("accepted connection");
         match conn {
             Ok((stream, _)) => {
                 tokio::spawn(async move {

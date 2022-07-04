@@ -30,6 +30,7 @@ fn main() {
     let mut socket = UnixStream::connect("/tmp/stts.sock").expect("failed to connect to server");
 
     // handshake with the server
+    println!("sending handshake");
     socket.write_u8(0x00).expect("failed to write to socket");
     socket
         .write_u8(false as u8)
@@ -38,9 +39,11 @@ fn main() {
     socket.flush().expect("failed to flush socket");
     // wait for the server to acknowledge the handshake
     assert_eq!(socket.read_u8().expect("failed to read from socket"), 0x00);
+    println!("handshake complete");
 
     // send the audio data to the server in chunks of 3,840 bytes (20ms, or 240 samples)
     for chunk in data.chunks(240) {
+        println!("sending chunk");
         // packet type: 0x01
         socket.write_u8(0x01).expect("failed to write to socket");
         // field 1: number of bytes in the chunk: u32
@@ -52,11 +55,14 @@ fn main() {
         NetworkEndian::write_i16_into(chunk, &mut dst);
         socket.write_all(&dst).expect("failed to write to socket");
         socket.flush().expect("failed to flush socket");
+        println!("chunk sent");
     }
 
     // finalize streaming
+    println!("sending finalize streaming");
     socket.write_u8(0x02).expect("failed to write to socket");
     socket.flush().expect("failed to flush socket");
+    println!("finalize streaming sent");
 
     // wait for the server to acknowledge the finalize streaming message
     assert_eq!(socket.read_u8().expect("failed to read from socket"), 0x02);
