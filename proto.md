@@ -37,7 +37,7 @@ This message is sent by the client to initialize the streaming connection.
 | `language` | `String` | The language to use for the model.        |
 
 ## Audio Data Packet
-This packet is sent to feed audio into the STT engine.
+This message is sent to feed audio into the STT engine.
 
 Do not send this message until you receive a "Initialization Complete" message.
 Any packets sent before that will be ignored.
@@ -52,7 +52,22 @@ Any packets sent before that will be ignored.
 | `data`     | `i16` | The audio data. This must be *exactly* `data_len*2` bytes. |
 
 ## Finalize Streaming
-This packet is sent to signal the end of audio streaming, and will trigger a "STT Result Packet" to be sent.
+This message is sent to signal the end of audio streaming, and will trigger a "STT Result Packet" to be sent.
+
+### Type
+`0x02`
+
+### Payload
+None
+
+## Close Connection
+This message is sent to close the connection early, and will immediately trigger a close on the server side.
+
+### Type
+`0x03`
+
+### Payload
+None
 
 # Server -> Client
 
@@ -78,7 +93,7 @@ Immediately after the message is sent, the server will close the connection.
 | `error`    | `String` | The error message. |
 
 ## STT Result Packet (normal)
-This packet is sent by the server to signal the end of speech to text processing.
+This message is sent by the server to signal the end of speech to text processing.
 
 Immediately after the message is sent, the server will close the connection.
 ### Type
@@ -89,9 +104,9 @@ Immediately after the message is sent, the server will close the connection.
 | `result` | `String` | The STT result. |
 
 ## STT Result Packet (verbose)
-This is the same as the normal STT result packet, but includes verbose data.
+This is the same as the normal STT result message, but includes verbose data.
 
-Just like the normal STT result packet, the connection will be closed after this message is sent.
+Just like the normal STT result message, the connection will be closed after this message is sent.
 ### Type
 `0x03`
 ### Payload
