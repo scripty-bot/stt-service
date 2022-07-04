@@ -46,6 +46,7 @@ impl ConnectionHandler {
                 0x00 => self.handle_0x00().await,
                 0x01 => self.handle_0x01().await,
                 0x02 => self.handle_0x02().await,
+                0x03 => self.handle_0x03().await,
                 _ => {
                     warn!("unknown message type: {}", t);
                     let _ = self.stream.write_u8(0xFE).await.map(|_| false);
@@ -213,6 +214,15 @@ impl ConnectionHandler {
             }
         }
 
+        Ok(true)
+    }
+
+    async fn handle_0x03() -> io::Result<bool> {
+        // 0x03: Close Connection
+
+        // no fields
+
+        // immediately close the connection
         Ok(true)
     }
 }
