@@ -3,13 +3,12 @@
 #[macro_use]
 extern crate tracing;
 
-use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt, WriteBytesExt};
-use std::fmt::Write as _;
-use std::io;
-use std::io::{Read, Write};
-use std::net::Shutdown;
-use std::os::unix::net::UnixStream;
+use byteorder::ByteOrder;
+use std::fmt::Write;
 use stts_speech_to_text::{Error, Stream};
+use tokio::io;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
 
 pub struct ConnectionHandler {
     stream: UnixStream,
@@ -29,28 +28,36 @@ impl From<UnixStream> for ConnectionHandler {
 
 impl ConnectionHandler {
     /// Enter the main loop of the connection handler.
-    pub fn handle(&mut self) {
+    pub async fn handle(&mut self) {
         loop {
             debug!("waiting for command");
             // read the type of the next incoming message
-            let t = match self.stream.read_u8() {
+            let t: io::Result<u8> = tokio::select! {
+                t = self.stream.read_u8() => t,
+                _ = tokio::signal::ctrl_c() => {
+                    let _ = self.stream.write_u8(0x05).await;
+                    break;
+                },
+            };
+
+            let t = match t {
                 Ok(t) => t,
                 Err(e) => {
                     error!("error reading message type: {}", e);
-                    let _ = self.stream.write_u8(0xFD);
-                    let _ = write_string(&mut self.stream, &e.to_string());
+                    let _ = self.stream.write_u8(0xFD).await;
+                    let _ = write_string(&mut self.stream, &e.to_string()).await;
                     break;
                 }
             };
             debug!("received command: {:02x}", t);
             let res = match t {
-                0x00 => self.handle_0x00(),
-                0x01 => self.handle_0x01(),
-                0x02 => self.handle_0x02(),
-                0x03 => self.handle_0x03(),
+                0x00 => self.handle_0x00().await,
+                0x01 => self.handle_0x01().await,
+                0x02 => self.handle_0x02().await,
+                0x03 => self.handle_0x03().await,
                 _ => {
                     warn!("unknown message type: {}", t);
-                    let _ = self.stream.write_u8(0xFE);
+                    let _ = self.stream.write_u8(0xFE).await.map(|_| false);
                     break;
                 }
             };
@@ -60,8 +67,8 @@ impl ConnectionHandler {
                 Ok(e) if e => break,
                 Err(e) => {
                     error!("error writing message: {}", e);
-                    let _ = self.stream.write_u8(0xFD);
-                    let _ = write_string(&mut self.stream, &e.to_string());
+                    let _ = self.stream.write_u8(0xFD).await;
+                    let _ = write_string(&mut self.stream, &e.to_string()).await;
                     break;
                 }
                 _ => {}
@@ -69,55 +76,60 @@ impl ConnectionHandler {
         }
         debug!("exiting");
         // shutdown the connection
-        if let Err(e) = self.stream.shutdown(Shutdown::Both) {
+        if let Err(e) = self.stream.shutdown().await {
             error!("error shutting down connection: {}", e);
         }
     }
 
-    fn handle_0x00(&mut self) -> io::Result<bool> {
+    async fn handle_0x00(&mut self) -> io::Result<bool> {
         // 0x00: Initialize Streaming
 
         // field 0: verbose: bool
         // read as a u8, then convert to bool
         trace!("reading verbose");
-        let verbose = self.stream.read_u8()? != 0;
+        let verbose = self.stream.read_u8().await? != 0;
 
         // field 1: language: String
         trace!("reading language");
-        let language = read_string(&mut self.stream)?;
+        let language = read_string(&mut self.stream).await?;
 
         debug!("loading stream");
-        let retval = match stts_speech_to_text::get_stream(&language) {
-            Some(stream) => {
-                debug!("loaded stream");
-                self.model = Some(stream);
-                self.verbose = verbose;
-                // success!
-                self.stream.write_u8(0x00)?;
-                false
-            }
-            None => {
-                warn!("failed to load stream");
-                // error!
-                self.stream.write_u8(0xFE)?;
-                true
-            }
-        };
+        let retval =
+            match tokio::task::spawn_blocking(move || stts_speech_to_text::get_stream(&language))
+                .await
+                .ok()
+                .flatten()
+            {
+                Some(stream) => {
+                    debug!("loaded stream");
+                    self.model = Some(stream);
+                    self.verbose = verbose;
+                    // success!
+                    self.stream.write_u8(0x00).await?;
+                    false
+                }
+                None => {
+                    warn!("failed to load stream");
+                    // error!
+                    self.stream.write_u8(0xFE).await?;
+                    true
+                }
+            };
         Ok(retval)
     }
 
-    fn handle_0x01(&mut self) -> io::Result<bool> {
+    async fn handle_0x01(&mut self) -> io::Result<bool> {
         // 0x01: Audio Data;
 
         // field 0: data_len: u32
         trace!("reading data length");
-        let data_len = self.stream.read_u32::<NetworkEndian>()?;
+        let data_len = self.stream.read_u32().await?;
         trace!("need to read {} bytes", data_len);
 
         // field 1: data: Vec<i16>, of length data_len/2, in NetworkEndian order
         trace!("reading data");
         let mut buf = vec![0; data_len as usize];
-        self.stream.read_exact(&mut buf)?;
+        self.stream.read_exact(&mut buf).await?;
 
         // fetch the model, if it doesn't exist, return and ignore this message
         trace!("fetching model");
@@ -134,12 +146,14 @@ impl ConnectionHandler {
 
         debug!("feeding data");
         // feed the audio data to the model
-        model.feed_audio(&data);
+        tokio::task::block_in_place(|| {
+            model.feed_audio(&data);
+        });
 
         Ok(false)
     }
 
-    fn handle_0x02(&mut self) -> io::Result<bool> {
+    async fn handle_0x02(&mut self) -> io::Result<bool> {
         // 0x02: Finalize Streaming
 
         // no fields
@@ -153,13 +167,13 @@ impl ConnectionHandler {
 
         if self.verbose {
             debug!("finalizing model");
-            match model.finish_stream_with_metadata(3) {
+            match tokio::task::block_in_place(|| model.finish_stream_with_metadata(3)) {
                 Ok(r) => {
                     trace!("writing header");
-                    self.stream.write_u8(0x03)?;
+                    self.stream.write_u8(0x03).await?;
                     let num = r.num_transcripts();
                     trace!("writing num_transcripts");
-                    self.stream.write_u32::<NetworkEndian>(num)?;
+                    self.stream.write_u32(num).await?;
                     if num != 0 {
                         let transcripts = r.transcripts();
                         let main_transcript = unsafe { transcripts.get_unchecked(0) };
@@ -170,37 +184,36 @@ impl ConnectionHandler {
                                 .expect("error writing to string");
                         }
                         trace!("writing transcript");
-                        write_string(&mut self.stream, &res)?;
+                        write_string(&mut self.stream, &res).await?;
                         trace!("writing confidence");
-                        self.stream
-                            .write_f64::<NetworkEndian>(main_transcript.confidence())?;
+                        self.stream.write_f64(main_transcript.confidence()).await?;
                     }
                 }
                 Err(e) => {
                     warn!("error finalizing model: {}", e);
                     trace!("writing header");
-                    self.stream.write_u8(0x04)?;
+                    self.stream.write_u8(0x04).await?;
                     let num_err = conv_err(e);
                     trace!("writing error");
-                    self.stream.write_i64::<NetworkEndian>(num_err)?;
+                    self.stream.write_i64(num_err).await?;
                 }
             }
         } else {
             debug!("finalizing model");
-            match model.finish_stream() {
+            match tokio::task::block_in_place(|| model.finish_stream()) {
                 Ok(s) => {
                     trace!("writing header");
-                    self.stream.write_u8(0x02)?;
+                    self.stream.write_u8(0x02).await?;
                     trace!("writing transcript");
-                    write_string(&mut self.stream, &s)?;
+                    write_string(&mut self.stream, &s).await?;
                 }
                 Err(e) => {
                     warn!("error finalizing model: {}", e);
                     trace!("writing header");
-                    self.stream.write_u8(0x04)?;
+                    self.stream.write_u8(0x04).await?;
                     let num_err = conv_err(e);
                     trace!("writing error");
-                    self.stream.write_i64::<NetworkEndian>(num_err)?;
+                    self.stream.write_i64(num_err).await?;
                 }
             }
         }
@@ -208,7 +221,7 @@ impl ConnectionHandler {
         Ok(true)
     }
 
-    fn handle_0x03(&mut self) -> io::Result<bool> {
+    async fn handle_0x03(&mut self) -> io::Result<bool> {
         // 0x03: Close Connection
 
         // no fields
@@ -218,21 +231,21 @@ impl ConnectionHandler {
     }
 }
 
-fn read_string(stream: &mut UnixStream) -> io::Result<String> {
+async fn read_string(stream: &mut UnixStream) -> io::Result<String> {
     // strings are encoded as a u64 length followed by the string bytes
-    let len = stream.read_u64::<NetworkEndian>()?;
+    let len = stream.read_u64().await?;
     let mut buf = vec![0u8; len as usize];
-    stream.read_exact(&mut buf)?;
+    stream.read_exact(&mut buf).await?;
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
-fn write_string(stream: &mut UnixStream, string: &str) -> io::Result<()> {
+async fn write_string(stream: &mut UnixStream, string: &str) -> io::Result<()> {
     // strings are encoded as a u64 length followed by the string bytes
     // cache the bytes to prevent a second call to .as_bytes()
     let bytes = string.as_bytes();
     let len = bytes.len() as u64;
-    stream.write_u64::<NetworkEndian>(len as u64)?;
-    stream.write_all(bytes)?;
+    stream.write_u64(len as u64).await?;
+    stream.write_all(bytes).await?;
     Ok(())
 }
 
