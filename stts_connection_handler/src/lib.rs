@@ -119,6 +119,7 @@ impl ConnectionHandler {
         // field 0: data_len: u32
         trace!("reading data length");
         let data_len = self.stream.read_u32().await?;
+        trace!("need to read {} bytes", data_len);
 
         // field 1: data: Vec<i16>, of length data_len/2, in NetworkEndian order
         trace!("reading data");
@@ -136,6 +137,7 @@ impl ConnectionHandler {
         trace!("processing audio data");
         let mut data = vec![0; (data_len / 2) as usize];
         byteorder::NetworkEndian::read_i16_into(&buf, &mut data);
+        trace!("found {} samples", data.len());
 
         debug!("feeding data");
         // feed the audio data to the model
