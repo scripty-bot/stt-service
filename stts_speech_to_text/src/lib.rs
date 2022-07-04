@@ -1,14 +1,14 @@
 use dashmap::DashMap;
 use once_cell::sync::OnceCell;
 use std::path::Path;
-use std::sync::Arc;
 
 pub use coqui_stt::*;
 
 #[macro_use]
 extern crate tracing;
 
-pub static MODELS: OnceCell<DashMap<String, Arc<Model>>> = OnceCell::new();
+pub type ModelLocation = (String, Option<String>);
+pub static MODELS: OnceCell<DashMap<String, (ModelLocation, Vec<Model>)>> = OnceCell::new();
 
 pub fn load_models(model_dir: &Path) {
     info!("initializing global model map");
@@ -52,15 +52,16 @@ pub fn load_models(model_dir: &Path) {
         }
         if let Some(model_path) = model_path {
             info!("found model: {:?}", model_path);
-            let mut model = Model::new(model_path).expect("failed to load model");
-            if let Some(scorer_path) = scorer_path {
-                info!("found scorer: {:?}", scorer_path);
+            info!("loading model");
+            let mut model = Model::new(&model_path).expect("failed to load model");
+            if let Some(ref scorer_path) = scorer_path {
+                info!("using external scorer: {:?}", scorer_path);
                 model
                     .enable_external_scorer(scorer_path)
                     .expect("failed to load scorer");
             }
             info!("loaded model, inserting into map");
-            models.insert(name.to_string(), Arc::new(model));
+            models.insert(name.to_string(), ((model_path, scorer_path), vec![model]));
         }
     }
     if models.is_empty() {
@@ -73,11 +74,27 @@ pub fn load_models(model_dir: &Path) {
     }
 }
 
-/// Get a stream for the selected language.
-pub fn get_stream(lang: &str) -> Option<Stream> {
-    MODELS
-        .get()
-        .expect("models should've been initialized before attempting to get a stream")
-        .get(lang)
-        .and_then(|x| Stream::from_model(x.value().clone()).ok())
+pub fn get_new_model(lang: &str) -> Option<Model> {
+    let models = MODELS.get().expect("models not initialized");
+    // try to find a model for the given language
+    let mut model_opt = models.get_mut(lang)?;
+    if let Some(model) = (model_opt.1).pop() {
+        return Some(model);
+    }
+    // if it wasn't found, make one
+    let (model_path, scorer_path) = &model_opt.0;
+    let mut model = Model::new(model_path).expect("failed to load model");
+    if let Some(ref scorer_path) = scorer_path {
+        model
+            .enable_external_scorer(scorer_path)
+            .expect("failed to load scorer");
+    }
+    Some(model)
+}
+
+pub fn reap_model(model: Model, lang: &str) {
+    let models = MODELS.get().expect("models not initialized");
+    if let Some(mut x) = models.get_mut(lang) {
+        (x.1).push(model)
+    }
 }

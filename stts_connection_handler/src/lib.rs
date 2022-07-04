@@ -5,14 +5,15 @@ extern crate tracing;
 
 use byteorder::ByteOrder;
 use std::fmt::Write;
-use stts_speech_to_text::{Error, Stream};
+use stts_speech_to_text::{reap_model, Error, Stream};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 pub struct ConnectionHandler {
     stream: UnixStream,
-    model: Option<Stream>,
+    stt_stream: Option<Stream>,
+    language: String,
     verbose: bool,
 }
 
@@ -20,7 +21,8 @@ impl From<UnixStream> for ConnectionHandler {
     fn from(stream: UnixStream) -> Self {
         Self {
             stream,
-            model: None,
+            stt_stream: None,
+            language: "".to_string(),
             verbose: false,
         }
     }
@@ -93,29 +95,35 @@ impl ConnectionHandler {
         trace!("reading language");
         let language = read_string(&mut self.stream).await?;
 
-        debug!("loading stream");
-        let retval =
-            match tokio::task::spawn_blocking(move || stts_speech_to_text::get_stream(&language))
-                .await
-                .ok()
-                .flatten()
-            {
-                Some(stream) => {
-                    debug!("loaded stream");
-                    self.model = Some(stream);
-                    self.verbose = verbose;
-                    // success!
-                    self.stream.write_u8(0x00).await?;
-                    false
-                }
+        debug!("loading model");
+        let model =
+            match tokio::task::block_in_place(|| stts_speech_to_text::get_new_model(&language)) {
+                Some(s) => s,
                 None => {
-                    warn!("failed to load stream");
-                    // error!
-                    self.stream.write_u8(0xFE).await?;
-                    true
+                    self.stream.write_u8(0xFF).await?;
+                    return Ok(true);
                 }
             };
-        Ok(retval)
+        debug!("loaded model");
+
+        debug!("loading stream");
+        let stt_stream = match model.into_streaming() {
+            Ok(s) => s,
+            Err(e) => {
+                error!("error initializing stream: {}", e);
+                self.stream.write_u8(0xFF).await?;
+                return Ok(true);
+            }
+        };
+        debug!("loaded stream");
+
+        self.stt_stream = Some(stt_stream);
+        self.verbose = verbose;
+        self.language = language;
+        // success!
+        self.stream.write_u8(0x00).await?;
+
+        Ok(true)
     }
 
     async fn handle_0x01(&mut self) -> io::Result<bool> {
@@ -133,7 +141,7 @@ impl ConnectionHandler {
 
         // fetch the model, if it doesn't exist, return and ignore this message
         trace!("fetching model");
-        let model = match self.model {
+        let stream = match self.stt_stream {
             Some(ref mut model) => model,
             None => return Ok(false),
         };
@@ -147,7 +155,7 @@ impl ConnectionHandler {
         debug!("feeding data");
         // feed the audio data to the model
         tokio::task::block_in_place(|| {
-            model.feed_audio(&data);
+            stream.feed_audio(&data);
         });
 
         Ok(false)
@@ -160,15 +168,15 @@ impl ConnectionHandler {
 
         // fetch the model, if it doesn't exist, return and ignore this message
         trace!("fetching model");
-        let model = match self.model.take() {
+        let stream = match self.stt_stream.take() {
             Some(model) => model,
             None => return Ok(false),
         };
 
         if self.verbose {
             debug!("finalizing model");
-            match tokio::task::block_in_place(|| model.finish_stream_with_metadata(3)) {
-                Ok(r) => {
+            match tokio::task::block_in_place(|| stream.finish_stream_with_metadata(3)) {
+                Ok((r, model)) => {
                     trace!("writing header");
                     self.stream.write_u8(0x03).await?;
                     let num = r.num_transcripts();
@@ -188,6 +196,7 @@ impl ConnectionHandler {
                         trace!("writing confidence");
                         self.stream.write_f64(main_transcript.confidence()).await?;
                     }
+                    reap_model(model, &self.language);
                 }
                 Err(e) => {
                     warn!("error finalizing model: {}", e);
@@ -200,12 +209,13 @@ impl ConnectionHandler {
             }
         } else {
             debug!("finalizing model");
-            match tokio::task::block_in_place(|| model.finish_stream()) {
-                Ok(s) => {
+            match tokio::task::block_in_place(|| stream.finish_stream()) {
+                Ok((s, model)) => {
                     trace!("writing header");
                     self.stream.write_u8(0x02).await?;
                     trace!("writing transcript");
                     write_string(&mut self.stream, &s).await?;
+                    reap_model(model, &self.language);
                 }
                 Err(e) => {
                     warn!("error finalizing model: {}", e);
