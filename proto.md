@@ -125,6 +125,15 @@ This message is sent when the STT engine fails to run the final result.
 |---------|-------|-----------------|
 | `error` | `i64` | The error code. |
 
+## Shutting Down
+This message is sent by the server to signal that the server is shutting down.
+
+Immediately after the message is sent, the server will close the connection.
+### Type
+`0x05`
+### Payload
+None
+
 ## Fatal IO Error
 This message is sent when the server encounters a fatal IO error.
 ### Type
