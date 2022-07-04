@@ -11,6 +11,6 @@ members = [
 ]
 
 [dependencies]
-serde = "1"
-bincode = "1"
 tokio = { version = "1", features = ["full"] }
+stts_speech_to_text = { path = "stts_speech_to_text" }
+stts_connection_handler = { path = "stts_connection_handler" }

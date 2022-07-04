@@ -1,36 +1,35 @@
+use std::path::Path;
 use tokio::io::AsyncReadExt;
 use tokio::net::unix::SocketAddr;
 use tokio::net::UnixStream;
 
 #[tokio::main]
 async fn main() {
-    let socket = tokio::net::UnixListener::bind("/tmp/stts.sock").expect("failed to bind to socket");
+    stts_speech_to_text::load_models(Path::new(
+        &std::env::args()
+            .nth(1)
+            .expect("first argument should be path to model directory"),
+    ))
+    .await;
 
-    // create a ctrl+c signal handler
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.unwrap();
-        tx.send(()).unwrap();
-    });
+    let socket =
+        tokio::net::UnixListener::bind("/tmp/stts.sock").expect("failed to bind to socket");
 
     loop {
         // accept connections and spawn a task for each one
         // or if ctrl+c is received, break the loop
         let conn: tokio::io::Result<(UnixStream, SocketAddr)> = tokio::select! {
             s = socket.accept() => s,
-            _ = rx => break,
+            _ = tokio::signal::ctrl_c() => break,
         };
         match conn {
             Ok((stream, _)) => {
                 tokio::spawn(async move {
-                    stream.read_exact()
-                    let mut buf = [0u8; 1024];
-                    let n = stream.read(&mut buf).await.unwrap();
-                    println!("{}", String::from_utf8_lossy(&buf[..n]));
+                    let mut handler = stts_connection_handler::ConnectionHandler::from(stream);
+                    handler.handle().await;
                 });
             }
             Err(e) => println!("accept error: {}", e),
         }
-
     }
 }

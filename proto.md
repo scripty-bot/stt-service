@@ -95,11 +95,11 @@ Just like the normal STT result packet, the connection will be closed after this
 ### Type
 `0x03`
 ### Payload
-| Field             | Type     | Description                              |
-|-------------------|----------|------------------------------------------|
-| `num_transcripts` | `u32`    | The number of transcripts in the result. |
-| `main_transcript` | `String` | The main transcript.                     |
-| `confidence`      | `f64`    | The confidence of the main transcript.   |
+| Field             | Type     | Description                                                                                 |
+|-------------------|----------|---------------------------------------------------------------------------------------------|
+| `num_transcripts` | `u32`    | The number of transcripts in the result. If this is 0, this is the only field that is sent. |
+| `main_transcript` | `String` | The main transcript.                                                                        |
+| `confidence`      | `f64`    | The confidence of the main transcript.                                                      |
 
 ## STT Result Failure
 This message is sent when the STT engine fails to run the final result.

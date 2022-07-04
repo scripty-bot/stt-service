@@ -9,19 +9,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
-name = "bincode"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+
+[[package]]
+name = "byteorder"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 
 [[package]]
 name = "bytes"
@@ -50,6 +47,24 @@ name = "coqui-stt-sys"
 version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5da24ef557d9caf47ca4c326f0c7de4aaf7f102a836710c2e03cbec0c1519be9"
+
+[[package]]
+name = "dashmap"
+version = "5.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3495912c9c1ccf2e18976439f4443f3fee0fd61f424ff99fde6a66b15ecb448f"
+dependencies = [
+ "cfg-if",
+ "hashbrown",
+ "lock_api",
+ "parking_lot_core",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db0d4cf898abf0081f964436dc980e96670a0f36863e4b83aaacdb65c9d7ccc3"
 
 [[package]]
 name = "hermit-abi"
@@ -185,16 +200,10 @@ checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
 name = "scripty_stt_service"
 version = "0.1.0"
 dependencies = [
- "bincode",
- "serde",
+ "stts_connection_handler",
+ "stts_speech_to_text",
  "tokio",
 ]
-
-[[package]]
-name = "serde"
-version = "1.0.138"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1578c6245786b9d168c5447eeacfb96856573ca56c9d68fdcf394be134882a47"
 
 [[package]]
 name = "signal-hook-registry"
@@ -225,6 +234,8 @@ dependencies = [
 name = "stts_connection_handler"
 version = "0.1.0"
 dependencies = [
+ "byteorder",
+ "stts_speech_to_text",
  "tokio",
  "tracing",
 ]
@@ -234,6 +245,9 @@ name = "stts_speech_to_text"
 version = "0.1.0"
 dependencies = [
  "coqui-stt",
+ "dashmap",
+ "once_cell",
+ "tracing",
 ]
 
 [[package]]

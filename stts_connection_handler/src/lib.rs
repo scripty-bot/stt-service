@@ -3,17 +3,26 @@
 #[macro_use]
 extern crate tracing;
 
+use byteorder::ByteOrder;
+use std::fmt::Write;
+use stts_speech_to_text::{Error, Stream};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 pub struct ConnectionHandler {
     stream: UnixStream,
+    model: Option<Stream>,
+    verbose: bool,
 }
 
 impl From<UnixStream> for ConnectionHandler {
     fn from(stream: UnixStream) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            model: None,
+            verbose: false,
+        }
     }
 }
 
@@ -26,7 +35,8 @@ impl ConnectionHandler {
                 Ok(t) => t,
                 Err(e) => {
                     error!("error reading message type: {}", e);
-                    let _ = self.stream.write_u8(0xFF).await;
+                    let _ = self.stream.write_u8(0xFD).await;
+                    let _ = write_string(&mut self.stream, &e.to_string()).await;
                     break;
                 }
             };
@@ -72,31 +82,50 @@ impl ConnectionHandler {
         // field 1: language: String
         let language = read_string(&mut self.stream).await?;
 
-        // TODO: send message to backend to actually initialize streaming
-
-        // send acknowledgement
-        self.stream.write_u8(0x00).await?;
-
-        Ok(false)
+        let retval =
+            match tokio::task::spawn_blocking(move || stts_speech_to_text::get_stream(&language))
+                .await
+            {
+                Some(stream) => {
+                    self.model = Some(stream);
+                    self.verbose = verbose;
+                    // success!
+                    self.stream.write_u8(0x00).await?;
+                    false
+                }
+                None => {
+                    // error!
+                    self.stream.write_u8(0xFE).await?;
+                    true
+                }
+            };
+        Ok(retval)
     }
 
     async fn handle_0x01(&mut self) -> io::Result<bool> {
-        // 0x01: Audio Data
+        // 0x01: Audio Data;
 
-        // field 0: channels: u8
-        let channels = self.stream.read_u8().await?;
-
-        // field 1: rate: u32
-        let rate = self.stream.read_u32().await?;
-
-        // field 2: data_len: u32
+        // field 0: data_len: u32
         let data_len = self.stream.read_u32().await?;
 
-        // field 3: data: Vec<u8>, of length data_len
+        // field 1: data: Vec<i16>, of length data_len/2, in NetworkEndian order
         let mut buf = vec![0; data_len as usize];
-        let data = self.stream.read_exact(&mut buf).await?;
+        self.stream.read_exact(&mut buf).await?;
 
-        // TODO: send message to backend to actually process the audio data
+        // fetch the model, if it doesn't exist, return and ignore this message
+        let model = match self.model {
+            Some(ref mut model) => model,
+            None => return Ok(false),
+        };
+
+        // if the model exists, *then* spend the handful of CPU cycles to process the audio data
+        let mut data = vec![0; (data_len / 2) as usize];
+        byteorder::NetworkEndian::read_i16_into(&buf, &mut data);
+
+        // feed the audio data to the model
+        tokio::task::block_in_place(|| {
+            model.feed_audio(&data);
+        });
 
         Ok(false)
     }
@@ -106,9 +135,50 @@ impl ConnectionHandler {
 
         // no fields
 
-        // TODO: send message to backend to actually finalize streaming
+        // fetch the model, if it doesn't exist, return and ignore this message
+        let model = match self.model.take() {
+            Some(model) => model,
+            None => return Ok(false),
+        };
 
-        // TODO: return result of backend processing
+        if self.verbose {
+            match model.finish_stream_with_metadata(3) {
+                Ok(r) => {
+                    self.stream.write_u8(0x03).await?;
+                    let num = r.num_transcripts();
+                    self.stream.write_u32(num).await?;
+                    if num != 0 {
+                        let transcripts = r.transcripts();
+                        let main_transcript = unsafe { transcripts.get_unchecked(0) };
+                        let tokens = main_transcript.tokens();
+                        let mut res = String::new();
+                        for token in tokens {
+                            res.write_str(token.text().as_ref())
+                                .expect("error writing to string");
+                        }
+                        write_string(&mut self.stream, &res).await?;
+                        self.stream.write_f64(main_transcript.confidence()).await?;
+                    }
+                }
+                Err(e) => {
+                    self.stream.write_u8(0x04).await?;
+                    let num_err = conv_err(e);
+                    self.stream.write_i64(num_err).await?;
+                }
+            }
+        } else {
+            match model.finish_stream() {
+                Ok(s) => {
+                    self.stream.write_u8(0x02).await?;
+                    write_string(&mut self.stream, &s).await?;
+                }
+                Err(e) => {
+                    self.stream.write_u8(0x04).await?;
+                    let num_err = conv_err(e);
+                    self.stream.write_i64(num_err).await?;
+                }
+            }
+        }
 
         Ok(true)
     }
@@ -130,4 +200,36 @@ async fn write_string(stream: &mut UnixStream, string: &str) -> io::Result<()> {
     stream.write_u64(len as u64).await?;
     stream.write_all(bytes).await?;
     Ok(())
+}
+
+fn conv_err(e: Error) -> i64 {
+    match e {
+        Error::NoModel => 2147483649,
+        Error::InvalidAlphabet => 0x2000,
+        Error::InvalidShape => 0x2001,
+        Error::InvalidScorer => 0x2002,
+        Error::ModelIncompatible => 0x2003,
+        Error::ScorerNotEnabled => 0x2004,
+        Error::ScorerUnreadable => 0x2005,
+        Error::ScorerInvalidHeader => 0x2006,
+        Error::ScorerNoTrie => 0x2007,
+        Error::ScorerInvalidTrie => 0x2008,
+        Error::ScorerVersionMismatch => 0x2009,
+        Error::InitMmapFailed => 0x3000,
+        Error::InitSessionFailed => 0x3001,
+        Error::InterpreterFailed => 0x3002,
+        Error::RunSessionFailed => 0x3003,
+        Error::CreateStreamFailed => 0x3004,
+        Error::ReadProtoBufFailed => 0x3005,
+        Error::CreateSessionFailed => 0x3006,
+        Error::CreateModelFailed => 0x3007,
+        Error::InsertHotWordFailed => 0x3008,
+        Error::ClearHotWordsFailed => 0x3009,
+        Error::EraseHotWordFailed => 0x3010,
+        Error::Other(n) => n,
+        Error::Unknown => 2147483650,
+        Error::NulBytesFound => 2147483651,
+        Error::Utf8Error(_) => 2147483652,
+        _ => i64::MIN,
+    }
 }
