@@ -53,7 +53,7 @@ fn main() {
             .write_u32::<NetworkEndian>(len)
             .expect("failed to write to socket");
         // field 2: chunk data: i16
-        let sample_count = chunk.len() * 2;
+        let sample_count = chunk.len() / 2;
         println!("writing {} samples", sample_count);
         let mut dst = vec![0; sample_count];
         NetworkEndian::write_i16_into(chunk, &mut dst);
