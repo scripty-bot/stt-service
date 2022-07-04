@@ -163,7 +163,7 @@ impl ConnectionHandler {
 
         if self.verbose {
             debug!("finalizing model");
-            match model.finish_stream_with_metadata(3) {
+            match tokio::task::block_in_place(|| model.finish_stream_with_metadata(3)) {
                 Ok(r) => {
                     trace!("writing header");
                     self.stream.write_u8(0x03).await?;
@@ -196,7 +196,7 @@ impl ConnectionHandler {
             }
         } else {
             debug!("finalizing model");
-            match model.finish_stream() {
+            match tokio::task::block_in_place(|| model.finish_stream()) {
                 Ok(s) => {
                     trace!("writing header");
                     self.stream.write_u8(0x02).await?;
