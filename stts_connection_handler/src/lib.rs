@@ -85,20 +85,16 @@ impl ConnectionHandler {
             };
             debug!("handled command: {:02x}", t);
 
-            let exit;
             match res {
-                Ok(e) => exit = e,
+                Ok(e) if e => break,
                 Err(e) => {
                     error!("error writing message: {}", e);
-                    exit = true;
                     let _ = self.stream.write_u8(0xFD).await;
                     let _ = write_string(&mut self.stream, &e.to_string()).await;
+                    break;
                 }
+                _ => {}
             };
-
-            if exit {
-                break;
-            }
         }
         debug!("exiting");
         // shutdown the connection
