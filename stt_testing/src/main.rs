@@ -47,13 +47,13 @@ fn main() {
         // packet type: 0x01
         socket.write_u8(0x01).expect("failed to write to socket");
         // field 1: number of bytes in the chunk: u32
-        let len = chunk.len() as u32;
-        println!("writing {} bytes", len);
+        let bytes = chunk.len() * std::mem::size_of::<i16>();
+        println!("writing {} bytes", bytes);
         socket
-            .write_u32::<NetworkEndian>(len)
+            .write_u32::<NetworkEndian>(bytes as u32)
             .expect("failed to write to socket");
         // field 2: chunk data: i16
-        let sample_count = chunk.len() * 2;
+        let sample_count = chunk.len();
         println!("writing {} samples", sample_count);
         let mut dst = vec![0; sample_count];
         NetworkEndian::write_i16_into(chunk, &mut dst);
