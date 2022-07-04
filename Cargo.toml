@@ -9,6 +9,9 @@ members = [
   "stts_connection_handler",
   "stts_speech_to_text",
 ]
+exclude = [
+  "stt_testing",
+]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
