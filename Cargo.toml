@@ -12,5 +12,7 @@ members = [
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
 stts_speech_to_text = { path = "stts_speech_to_text" }
 stts_connection_handler = { path = "stts_connection_handler" }
