@@ -31,7 +31,7 @@ impl ConnectionHandler {
     pub async fn handle(&mut self) {
         loop {
             // read the type of the next incoming message
-            let t = match stream.read_u8().await {
+            let t = match self.stream.read_u8().await {
                 Ok(t) => t,
                 Err(e) => {
                     error!("error reading message type: {}", e);
@@ -40,18 +40,18 @@ impl ConnectionHandler {
                     break;
                 }
             };
-            let mut exit = bool;
-
             let res = match t {
                 0x00 => self.handle_0x00().await,
                 0x01 => self.handle_0x01().await,
                 0x02 => self.handle_0x02().await,
                 _ => {
                     info!("unknown message type: {}", t);
-                    exit = true;
-                    self.stream.write_u8(0xFE).await.map(|_| false)
+                    let _ = self.stream.write_u8(0xFE).await.map(|_| false);
+                    break;
                 }
             };
+
+            let exit;
             match res {
                 Ok(e) => exit = e,
                 Err(e) => {
@@ -67,7 +67,7 @@ impl ConnectionHandler {
             }
         }
         // shutdown the connection
-        if let Err(e) = stream.shutdown() {
+        if let Err(e) = self.stream.shutdown().await {
             error!("error shutting down connection: {}", e);
         }
     }
@@ -85,6 +85,8 @@ impl ConnectionHandler {
         let retval =
             match tokio::task::spawn_blocking(move || stts_speech_to_text::get_stream(&language))
                 .await
+                .ok()
+                .flatten()
             {
                 Some(stream) => {
                     self.model = Some(stream);
@@ -226,7 +228,7 @@ fn conv_err(e: Error) -> i64 {
         Error::InsertHotWordFailed => 0x3008,
         Error::ClearHotWordsFailed => 0x3009,
         Error::EraseHotWordFailed => 0x3010,
-        Error::Other(n) => n,
+        Error::Other(n) => n as i64,
         Error::Unknown => 2147483650,
         Error::NulBytesFound => 2147483651,
         Error::Utf8Error(_) => 2147483652,

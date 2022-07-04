@@ -1,5 +1,4 @@
 use std::path::Path;
-use tokio::io::AsyncReadExt;
 use tokio::net::unix::SocketAddr;
 use tokio::net::UnixStream;
 
@@ -9,8 +8,7 @@ async fn main() {
         &std::env::args()
             .nth(1)
             .expect("first argument should be path to model directory"),
-    ))
-    .await;
+    ));
 
     let socket =
         tokio::net::UnixListener::bind("/tmp/stts.sock").expect("failed to bind to socket");
