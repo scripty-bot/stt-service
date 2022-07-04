@@ -55,7 +55,7 @@ fn main() {
         // field 2: chunk data: i16
         let sample_count = chunk.len();
         println!("writing {} samples", sample_count);
-        let mut dst = vec![0; sample_count];
+        let mut dst = vec![0; bytes];
         NetworkEndian::write_i16_into(chunk, &mut dst);
         socket.write_all(&dst).expect("failed to write to socket");
         socket.flush().expect("failed to flush socket");
