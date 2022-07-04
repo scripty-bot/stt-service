@@ -14,7 +14,7 @@ exclude = [
 ]
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+ctrlc = "3"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 stts_speech_to_text = { path = "stts_speech_to_text" }

@@ -1,12 +1,12 @@
+use std::os::unix::net::UnixListener;
 use std::path::Path;
-use tokio::net::unix::SocketAddr;
-use tokio::net::UnixStream;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 #[macro_use]
 extern crate tracing;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     tracing_subscriber::fmt::init();
 
     info!("loading models");
@@ -17,25 +17,33 @@ async fn main() {
     ));
     info!("loaded models");
 
+    info!("registering signal handler");
+    let exit = Arc::new(AtomicBool::new(false));
+    let e2 = exit.clone();
+    ctrlc::set_handler(move || {
+        e2.store(true, std::sync::atomic::Ordering::SeqCst);
+    })
+    .expect("failed to register signal handler");
+    info!("registered ctrl+c handler");
+
     info!("opening Unix Domain Socket");
-    let socket =
-        tokio::net::UnixListener::bind("/tmp/stts.sock").expect("failed to bind to socket");
+    let socket = UnixListener::bind("/tmp/stts.sock").expect("failed to bind to socket");
     info!("opened Unix Domain Socket");
 
     info!("polling for connections");
     loop {
+        if exit.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+
         // accept connections and spawn a task for each one
-        // or if ctrl+c is received, break the loop
-        let conn: tokio::io::Result<(UnixStream, SocketAddr)> = tokio::select! {
-            s = socket.accept() => s,
-            _ = tokio::signal::ctrl_c() => break,
-        };
+        let conn = socket.accept();
         debug!("accepted connection");
         match conn {
             Ok((stream, _)) => {
-                tokio::spawn(async move {
+                std::thread::spawn(move || {
                     let mut handler = stts_connection_handler::ConnectionHandler::from(stream);
-                    handler.handle().await;
+                    handler.handle();
                 });
             }
             Err(e) => println!("accept error: {}", e),
@@ -43,6 +51,7 @@ async fn main() {
     }
 
     info!("caught Ctrl+C, closing Unix Domain Socket");
+    drop(socket);
     if let Err(e) = std::fs::remove_file("/tmp/stts.sock") {
         error!("failed to remove socket: {}", e);
     };
