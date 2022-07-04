@@ -43,12 +43,12 @@ Any packets sent before that will be ignored.
 `0x01`
 
 ### Payload
-| Field      | Type  | Description                                                      |
-|------------|-------|------------------------------------------------------------------|
-| `channels` | `u8`  | The number of channels in the audio data.                        |
-| `rate`     | `u32` | The sample rate of the audio data in Hz.                         |
-| `data_len` | `u32` | The length of the audio data.                                    |
-| `data`     | `i16` | The audio data. This must, again, be *exactly* `data_len` bytes. |
+| Field      | Type  | Description                                                |
+|------------|-------|------------------------------------------------------------|
+| `channels` | `u8`  | The number of channels in the audio data.                  |
+| `rate`     | `u32` | The sample rate of the audio data in Hz.                   |
+| `data_len` | `u32` | The length of the audio data.                              |
+| `data`     | `i16` | The audio data. This must be *exactly* `data_len*2` bytes. |
 
 ## Finalize Streaming
 This packet is sent to signal the end of audio streaming, and will trigger a "STT Result Packet" to be sent.
