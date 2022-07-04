@@ -11,8 +11,6 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use stts_speech_to_text::{Error, Stream};
 
-static GLOBAL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 pub struct ConnectionHandler {
     stream: UnixStream,
     model: Option<Stream>,
@@ -136,10 +134,7 @@ impl ConnectionHandler {
 
         debug!("feeding data");
         // feed the audio data to the model
-        {
-            let _lock = GLOBAL_LOCK.lock().unwrap();
-            model.feed_audio(&data);
-        }
+        model.feed_audio(&data);
 
         Ok(false)
     }
@@ -158,10 +153,7 @@ impl ConnectionHandler {
 
         if self.verbose {
             debug!("finalizing model");
-            match {
-                let _lock = GLOBAL_LOCK.lock().unwrap();
-                model.finish_stream_with_metadata(3)
-            } {
+            match model.finish_stream_with_metadata(3) {
                 Ok(r) => {
                     trace!("writing header");
                     self.stream.write_u8(0x03)?;
@@ -195,10 +187,7 @@ impl ConnectionHandler {
             }
         } else {
             debug!("finalizing model");
-            match {
-                let _lock = GLOBAL_LOCK.lock().unwrap();
-                model.finish_stream()
-            } {
+            match model.finish_stream() {
                 Ok(s) => {
                     trace!("writing header");
                     self.stream.write_u8(0x02)?;
