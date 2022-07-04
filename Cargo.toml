@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [workspace]
 members = [
-  "stts_wire_proto",
   "stts_connection_handler",
+  "stts_speech_to_text",
 ]
 
 [dependencies]
