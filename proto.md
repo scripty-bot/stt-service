@@ -19,6 +19,9 @@ Strings are encoded as follows:
 | `len`  | `u64` | The length of the string               |
 | `data` | `u8`  | The string data (must be valid UTF-8!) |
 
+## Boolean Encoding
+Booleans are simply u8s, with 0 for false and 1 for true.
+
 # Client -> Server
 
 ## Initialize Streaming
@@ -45,8 +48,6 @@ Any packets sent before that will be ignored.
 ### Payload
 | Field      | Type  | Description                                                |
 |------------|-------|------------------------------------------------------------|
-| `channels` | `u8`  | The number of channels in the audio data.                  |
-| `rate`     | `u32` | The sample rate of the audio data in Hz.                   |
 | `data_len` | `u32` | The length of the audio data.                              |
 | `data`     | `i16` | The audio data. This must be *exactly* `data_len*2` bytes. |
 
@@ -108,3 +109,26 @@ This message is sent when the STT engine fails to run the final result.
 | Field   | Type  | Description     |
 |---------|-------|-----------------|
 | `error` | `i64` | The error code. |
+
+## Fatal IO Error
+This message is sent when the server encounters a fatal IO error.
+### Type
+`0xFD`
+### Payload
+| Field   | Type     | Description                       |
+|---------|----------|-----------------------------------|
+| `error` | `String` | The Rust formatted error message. |
+
+## Fatal User Error
+This message is sent when the sender sends invalid data.
+### Type
+`0xFE`
+### Payload
+None
+
+## Fatal Unknown Error
+This message is sent when the server encounters an unknown error.
+### Type
+`0xFF`
+### Payload
+None
