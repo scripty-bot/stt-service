@@ -41,4 +41,10 @@ async fn main() {
             Err(e) => println!("accept error: {}", e),
         }
     }
+
+    info!("caught Ctrl+C, closing Unix Domain Socket");
+    if let Err(e) = std::fs::remove_file("/tmp/stts.sock") {
+        error!("failed to remove socket: {}", e);
+    };
+    info!("exiting");
 }
