@@ -261,7 +261,6 @@ name = "stts_connection_handler"
 version = "0.1.0"
 dependencies = [
  "byteorder",
- "once_cell",
  "stts_speech_to_text",
  "tokio",
  "tracing",

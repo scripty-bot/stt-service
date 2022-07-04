@@ -4,30 +4,11 @@
 extern crate tracing;
 
 use byteorder::ByteOrder;
-use once_cell::sync::OnceCell;
 use std::fmt::Write;
 use stts_speech_to_text::{Error, Stream};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::sync::watch::Receiver;
-
-static CTRL_C_SHUTDOWN: OnceCell<Receiver<()>> = OnceCell::new();
-
-pub async fn init_ctrl_c() {
-    let (tx, rx) = tokio::sync::watch::channel(());
-    CTRL_C_SHUTDOWN
-        .set(rx)
-        .expect("don't call init_ctrl_c twice");
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to listen for ctrl+c");
-        tx.send(())
-            .await
-            .expect("failed to send ctrl+c (should be impossible)");
-    });
-}
 
 pub struct ConnectionHandler {
     stream: UnixStream,
@@ -48,15 +29,12 @@ impl From<UnixStream> for ConnectionHandler {
 impl ConnectionHandler {
     /// Enter the main loop of the connection handler.
     pub async fn handle(&mut self) {
-        let sig_handler = CTRL_C_SHUTDOWN
-            .get()
-            .expect("ctrl+c handler not initialized");
         loop {
             debug!("waiting for command");
             // read the type of the next incoming message
             let t: io::Result<u8> = tokio::select! {
-                t = self.stream.read_u8().await => t,
-                _ = sig_handler.recv() => {
+                t = self.stream.read_u8() => t,
+                _ = tokio::signal::ctrl_c() => {
                     let _ = self.stream.write_u8(0x05).await;
                     break;
                 },
@@ -243,7 +221,7 @@ impl ConnectionHandler {
         Ok(true)
     }
 
-    async fn handle_0x03() -> io::Result<bool> {
+    async fn handle_0x03(&mut self) -> io::Result<bool> {
         // 0x03: Close Connection
 
         // no fields
