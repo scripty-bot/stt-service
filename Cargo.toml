@@ -1,0 +1,16 @@
+[package]
+name = "scripty_stt_service"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = [
+  "stts_wire_proto",
+  "stts_connection_handler",
+]
+
+[dependencies]
+serde = "1"
+bincode = "1"
+tokio = { version = "1", features = ["full"] }
