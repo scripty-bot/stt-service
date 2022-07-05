@@ -89,12 +89,15 @@ pub fn get_new_model(lang: &str) -> Option<Model> {
             .enable_external_scorer(scorer_path)
             .expect("failed to load scorer");
     }
+    trace!("created new model, now at {} models", model_opt.1.len());
     Some(model)
 }
 
 pub fn reap_model(model: Model, lang: &str) {
+    trace!("reaping model");
     let models = MODELS.get().expect("models not initialized");
     if let Some(mut x) = models.get_mut(lang) {
-        (x.1).push(model)
+        (x.1).push(model);
+        trace!("reaped model successfully");
     }
 }
