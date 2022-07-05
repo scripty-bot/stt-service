@@ -194,7 +194,10 @@ impl ConnectionHandler {
                         trace!("writing transcript");
                         write_string(&mut self.stream, &res).await?;
                         trace!("writing confidence");
-                        self.stream.write_f64(main_transcript.confidence()).await?;
+                        let confidence = main_transcript.confidence();
+                        // the confidence percent is calculated as (-1 / confidence) * 200
+                        let pct_confidence = (-1.0 / confidence) * 200.0;
+                        self.stream.write_f64(pct_confidence).await?;
                     }
                     reap_model(model, &self.language);
                 }
