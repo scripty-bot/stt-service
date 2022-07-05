@@ -123,7 +123,7 @@ impl ConnectionHandler {
         // success!
         self.stream.write_u8(0x00).await?;
 
-        Ok(true)
+        Ok(false)
     }
 
     async fn handle_0x01(&mut self) -> io::Result<bool> {
