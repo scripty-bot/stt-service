@@ -5,7 +5,7 @@ extern crate tracing;
 
 use byteorder::ByteOrder;
 use std::fmt::Write;
-use stts_speech_to_text::{reap_model, Error, Stream};
+use stts_speech_to_text::{Error, Stream};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -176,7 +176,7 @@ impl ConnectionHandler {
         if self.verbose {
             debug!("finalizing model");
             match tokio::task::block_in_place(|| stream.finish_stream_with_metadata(3)) {
-                Ok((r, model)) => {
+                Ok((r, _model)) => {
                     trace!("writing header");
                     self.stream.write_u8(0x03).await?;
                     let num = r.num_transcripts();
@@ -199,7 +199,6 @@ impl ConnectionHandler {
                         let pct_confidence = (-1.0 / confidence) * 200.0;
                         self.stream.write_f64(pct_confidence).await?;
                     }
-                    reap_model(model, &self.language);
                 }
                 Err(e) => {
                     warn!("error finalizing model: {}", e);
@@ -213,12 +212,11 @@ impl ConnectionHandler {
         } else {
             debug!("finalizing model");
             match tokio::task::block_in_place(|| stream.finish_stream()) {
-                Ok((s, model)) => {
+                Ok((s, _model)) => {
                     trace!("writing header");
                     self.stream.write_u8(0x02).await?;
                     trace!("writing transcript");
                     write_string(&mut self.stream, &s).await?;
-                    reap_model(model, &self.language);
                 }
                 Err(e) => {
                     warn!("error finalizing model: {}", e);
