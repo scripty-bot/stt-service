@@ -74,7 +74,7 @@ pub fn load_models(model_dir: &Path) {
     }
 }
 
-pub fn get_new_model(lang: &str) -> Option<Model> {
+fn get_new_model(lang: &str) -> Option<Model> {
     let models = MODELS.get().expect("models not initialized");
     // try to find a model for the given language
     let mut model_opt = models.get_mut(lang)?;
@@ -93,11 +93,141 @@ pub fn get_new_model(lang: &str) -> Option<Model> {
     Some(model)
 }
 
-pub fn reap_model(model: Model, lang: &str) {
+fn reap_model(model: Model, lang: &str) {
     trace!("reaping model");
     let models = MODELS.get().expect("models not initialized");
     if let Some(mut x) = models.get_mut(lang) {
         (x.1).push(model);
         trace!("reaped model successfully");
+    }
+}
+
+enum StreamTxData {
+    FeedAudio(Vec<i16>, flume::Sender<()>),
+}
+
+enum StreamTxFinalizeData {
+    Finalize(flume::Sender<Result<String>>),
+    FinalizeWithMetadata(flume::Sender<Result<Metadata>>),
+}
+
+/// A wrapper around a Stream that holds the Stream on one thread constantly.
+pub struct SttStreamingState {
+    stream_tx: flume::Sender<StreamTxData>,
+    final_tx: flume::Sender<StreamTxFinalizeData>,
+}
+
+impl SttStreamingState {
+    pub async fn new(language: String) -> Option<Self> {
+        let (init_tx, init_rx) = flume::bounded(0);
+        let (stream_tx, stream_rx) = flume::unbounded();
+        let (final_tx, final_rx) = flume::bounded(0);
+
+        std::thread::spawn(move || {
+            let model = match get_new_model(&language) {
+                Some(model) => model,
+                None => {
+                    init_tx.send(None).expect("failed to send init message");
+                    error!("no model found for language {}", language);
+                    return;
+                }
+            };
+
+            let mut stream = match model.into_streaming() {
+                Ok(s) => s,
+                Err(e) => {
+                    init_tx.send(None).expect("failed to send init message");
+                    error!("failed to create stream for model: {}", e);
+                    return;
+                }
+            };
+            init_tx.send(Some(())).expect("failed to send init message");
+
+            while let Ok(data) = stream_rx.recv() {
+                match data {
+                    StreamTxData::FeedAudio(audio, wait_tx) => {
+                        stream.feed_audio(&audio);
+                        wait_tx.send(()).expect("failed to send wait message");
+                    }
+                }
+            }
+
+            match final_rx.recv() {
+                Ok(StreamTxFinalizeData::Finalize(tx)) => {
+                    let result = stream.finish_stream();
+                    match result {
+                        Ok((text, model)) => {
+                            reap_model(model, &language);
+                            tx.send(Ok(text)).expect("failed to send result");
+                        }
+                        Err(e) => {
+                            tx.send(Err(e)).expect("failed to send result");
+                        }
+                    }
+                }
+                Ok(StreamTxFinalizeData::FinalizeWithMetadata(tx)) => {
+                    let result = stream.finish_stream_with_metadata(10);
+                    match result {
+                        Ok((metadata, model)) => {
+                            reap_model(model, &language);
+                            tx.send(Ok(metadata)).expect("failed to send result");
+                        }
+                        Err(e) => {
+                            tx.send(Err(e)).expect("failed to send result");
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("failed to receive finalize message: {}", e);
+                }
+            };
+        });
+
+        init_rx.recv_async().await.ok().flatten()?;
+
+        Some(SttStreamingState {
+            stream_tx,
+            final_tx,
+        })
+    }
+
+    pub async fn feed_audio(&self, audio: Vec<i16>) {
+        let (wait_tx, wait_rx) = flume::bounded(0);
+
+        self.stream_tx
+            .send(StreamTxData::FeedAudio(audio, wait_tx))
+            .expect("failed to send message");
+
+        let _ = wait_rx.recv_async().await;
+    }
+
+    pub async fn finish_stream(self) -> Result<String> {
+        let Self {
+            stream_tx,
+            final_tx,
+        } = self;
+        // drop the stream to immediately throw an error in the spawned thread
+        drop(stream_tx);
+
+        let (tx, rx) = flume::bounded(0);
+        final_tx
+            .send(StreamTxFinalizeData::Finalize(tx))
+            .expect("failed to send message");
+        rx.recv_async().await.expect("failed to receive result")
+    }
+
+    pub async fn finish_stream_with_metadata(self) -> Result<Metadata> {
+        let Self {
+            stream_tx,
+            final_tx,
+        } = self;
+        // drop the stream to immediately throw an error in the spawned thread
+        drop(stream_tx);
+
+        let (tx, rx) = flume::bounded(0);
+        final_tx
+            .send(StreamTxFinalizeData::FinalizeWithMetadata(tx))
+            .expect("failed to send message");
+        rx.recv_async().await.expect("failed to receive result")
     }
 }

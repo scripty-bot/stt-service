@@ -5,15 +5,14 @@ extern crate tracing;
 
 use byteorder::ByteOrder;
 use std::fmt::Write;
-use stts_speech_to_text::{reap_model, Error, Stream};
+use stts_speech_to_text::{Error, SttStreamingState};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 pub struct ConnectionHandler {
     stream: UnixStream,
-    stt_stream: Option<Stream>,
-    language: String,
+    stt_stream: Option<SttStreamingState>,
     verbose: bool,
 }
 
@@ -22,7 +21,6 @@ impl From<UnixStream> for ConnectionHandler {
         Self {
             stream,
             stt_stream: None,
-            language: "".to_string(),
             verbose: false,
         }
     }
@@ -95,22 +93,10 @@ impl ConnectionHandler {
         trace!("reading language");
         let language = read_string(&mut self.stream).await?;
 
-        debug!("loading model");
-        let model =
-            match tokio::task::block_in_place(|| stts_speech_to_text::get_new_model(&language)) {
-                Some(s) => s,
-                None => {
-                    self.stream.write_u8(0xFF).await?;
-                    return Ok(true);
-                }
-            };
-        debug!("loaded model");
-
         debug!("loading stream");
-        let stt_stream = match model.into_streaming() {
-            Ok(s) => s,
-            Err(e) => {
-                error!("error initializing stream: {}", e);
+        let stt_stream = match SttStreamingState::new(language).await {
+            Some(s) => s,
+            None => {
                 self.stream.write_u8(0xFF).await?;
                 return Ok(true);
             }
@@ -119,7 +105,6 @@ impl ConnectionHandler {
 
         self.stt_stream = Some(stt_stream);
         self.verbose = verbose;
-        self.language = language;
         // success!
         self.stream.write_u8(0x00).await?;
 
@@ -154,9 +139,7 @@ impl ConnectionHandler {
 
         debug!("feeding data");
         // feed the audio data to the model
-        tokio::task::block_in_place(|| {
-            stream.feed_audio(&data);
-        });
+        stream.feed_audio(data).await;
 
         Ok(false)
     }
@@ -175,8 +158,8 @@ impl ConnectionHandler {
 
         if self.verbose {
             debug!("finalizing model");
-            match tokio::task::block_in_place(|| stream.finish_stream_with_metadata(3)) {
-                Ok((r, model)) => {
+            match stream.finish_stream_with_metadata().await {
+                Ok(r) => {
                     trace!("writing header");
                     self.stream.write_u8(0x03).await?;
                     let num = r.num_transcripts();
@@ -199,7 +182,6 @@ impl ConnectionHandler {
                         let pct_confidence = (-1.0 / confidence) * 200.0;
                         self.stream.write_f64(pct_confidence).await?;
                     }
-                    reap_model(model, &self.language);
                 }
                 Err(e) => {
                     warn!("error finalizing model: {}", e);
@@ -212,13 +194,12 @@ impl ConnectionHandler {
             }
         } else {
             debug!("finalizing model");
-            match tokio::task::block_in_place(|| stream.finish_stream()) {
-                Ok((s, model)) => {
+            match stream.finish_stream().await {
+                Ok(s) => {
                     trace!("writing header");
                     self.stream.write_u8(0x02).await?;
                     trace!("writing transcript");
                     write_string(&mut self.stream, &s).await?;
-                    reap_model(model, &self.language);
                 }
                 Err(e) => {
                     warn!("error finalizing model: {}", e);
