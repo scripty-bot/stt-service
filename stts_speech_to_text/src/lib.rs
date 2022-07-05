@@ -8,7 +8,7 @@ pub use coqui_stt::*;
 extern crate tracing;
 
 pub type ModelLocation = (String, Option<String>);
-pub static MODELS: OnceCell<DashMap<String, ModelLocation>> = OnceCell::new();
+pub static MODELS: OnceCell<DashMap<String, (ModelLocation, Vec<Model>)>> = OnceCell::new();
 
 pub fn load_models(model_dir: &Path) {
     info!("initializing global model map");
@@ -61,7 +61,7 @@ pub fn load_models(model_dir: &Path) {
                     .expect("failed to load scorer");
             }
             info!("loaded model, inserting into map");
-            models.insert(name.to_string(), (model_path, scorer_path));
+            models.insert(name.to_string(), ((model_path, scorer_path), vec![model]));
         }
     }
     if models.is_empty() {
@@ -76,15 +76,28 @@ pub fn load_models(model_dir: &Path) {
 
 pub fn get_new_model(lang: &str) -> Option<Model> {
     let models = MODELS.get().expect("models not initialized");
-    // make a model for the language if possible
-    let model_location = models.get(lang)?;
-    let (model_path, scorer_path) = &model_location.value();
+    // try to find a model for the given language
+    let mut model_opt = models.get_mut(lang)?;
+    if let Some(model) = (model_opt.1).pop() {
+        return Some(model);
+    }
+    // if it wasn't found, make one
+    let (model_path, scorer_path) = &model_opt.0;
     let mut model = Model::new(model_path).expect("failed to load model");
     if let Some(ref scorer_path) = scorer_path {
         model
             .enable_external_scorer(scorer_path)
             .expect("failed to load scorer");
     }
-    trace!("created new model");
+    trace!("created new model, now at {} models", model_opt.1.len());
     Some(model)
+}
+
+pub fn reap_model(model: Model, lang: &str) {
+    trace!("reaping model");
+    let models = MODELS.get().expect("models not initialized");
+    if let Some(mut x) = models.get_mut(lang) {
+        (x.1).push(model);
+        trace!("reaped model successfully");
+    }
 }
