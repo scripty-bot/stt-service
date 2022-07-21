@@ -5,7 +5,9 @@ extern crate tracing;
 
 use byteorder::ByteOrder;
 use std::fmt::Write;
+use std::time::Duration;
 use stts_speech_to_text::{Error, SttStreamingState};
+use systemstat::LoadAverage;
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -222,6 +224,88 @@ impl ConnectionHandler {
 
         // immediately close the connection
         Ok(true)
+    }
+
+    async fn handle_0x04(&mut self) -> io::Result<bool> {
+        // 0x04: Convert to Status
+
+        // no fields
+
+        // send current status
+
+        // grab the required settings from command line args
+        let max_utilization = std::env::args()
+            .nth(2)
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(1.0);
+        info!("allowing max utilization of {}%", max_utilization * 100.0);
+
+        let can_overload = std::env::args()
+            .nth(3)
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(false);
+        info!("can_overload: {}", can_overload);
+
+        // send Status Connection Open (type: 0x06, fields: max_utilization: f64, can_overload: bool)
+        trace!("writing header");
+        self.stream.write_u8(0x06).await?;
+        trace!("writing max_utilization");
+        self.stream.write_f64(max_utilization).await?;
+        trace!("writing can_overload");
+        self.stream.write_bool(can_overload).await?;
+
+        let cpu_count = num_cpus::get() as f64;
+        let mut error_count = 0;
+
+        loop {
+            if error_count == 3 {
+                // throw an error
+                self.stream.write_u8(0xFF).await?;
+                return Ok(true);
+            }
+
+            // wait for either 5 seconds, or for a message to be received
+            let timeout = tokio::time::timeout(Duration::from_secs(5), self.stream.read_u8()).await;
+
+            // check what we got
+            match timeout {
+                Ok(Ok(t)) if t == 0x03 => {
+                    // 0x03: Close Connection
+                    // close the connection
+                    break Ok(true);
+                }
+                Ok(Err(e)) => {
+                    // IO error: return it
+                    return Err(e.into());
+                }
+                Err(_) => {
+                    // timed out without a new message: send a Status Connection Data (type 0x07, fields: utilization: f64)
+
+                    let LoadAverage { one, .. } = match systemstat::platform::unix::load_average() {
+                        Ok(la) => la,
+                        Err(e) => {
+                            warn!("error getting load average: {}", e);
+                            error_count += 1;
+                            continue;
+                        }
+                    };
+                    error_count = 0;
+
+                    // calculate the overall system utilization
+                    let utilization = one as f64 / cpu_count;
+
+                    // send data
+                    trace!("writing header");
+                    self.stream.write_u8(0x07).await?;
+                    trace!("writing utilization");
+                    self.stream.write_f64(utilization).await?;
+                    // done!
+                }
+                _ => {
+                    // anything else is a no-op
+                }
+            }
+        }
     }
 }
 
