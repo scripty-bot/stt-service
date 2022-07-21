@@ -69,6 +69,13 @@ This message is sent to close the connection early, and will immediately trigger
 ### Payload
 None
 
+## Convert to Status
+This message is sent when the client would like this connection to monitor the server status.
+### Type
+`0x04`
+### Payload
+None
+
 # Server -> Client
 
 
@@ -133,6 +140,25 @@ Immediately after the message is sent, the server will close the connection.
 `0x05`
 ### Payload
 None
+
+## Status Connection Open
+This message is sent after the client requests switching the connection into a status connection.
+### Type
+`0x06`
+### Payload
+| Field             | Type   | Description                                              |
+|-------------------|--------|----------------------------------------------------------|
+| `max_utilization` | `f64`  | The maximum utilization of the server.                   |
+| `can_overload`    | `bool` | If true, and required, `max_utilization` can be ignored. |
+
+## Status Connection Data
+This message is sent every 5 seconds after a "Status Connection Open" message.
+### Type
+`0x07`
+### Payload
+| Field             | Type   | Description                            |
+|-------------------|--------|----------------------------------------|
+| `utilization`     | `f64`  | The current utilization of the server. |
 
 ## Fatal IO Error
 This message is sent when the server encounters a fatal IO error.
