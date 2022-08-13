@@ -57,6 +57,7 @@ impl ConnectionHandler {
                 0x01 => self.handle_0x01().await,
                 0x02 => self.handle_0x02().await,
                 0x03 => self.handle_0x03().await,
+                0x04 => self.handle_0x04().await,
                 _ => {
                     warn!("unknown message type: {}", t);
                     let _ = self.stream.write_u8(0xFE).await.map(|_| false);
@@ -237,7 +238,8 @@ impl ConnectionHandler {
         let max_utilization = std::env::args()
             .nth(2)
             .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(1.0);
+            .unwrap_or(1.0)
+            .min(1.0);
         info!("allowing max utilization of {}%", max_utilization * 100.0);
 
         let can_overload = std::env::args()
@@ -276,7 +278,7 @@ impl ConnectionHandler {
                 }
                 Ok(Err(e)) => {
                     // IO error: return it
-                    return Err(e.into());
+                    return Err(e);
                 }
                 Err(_) => {
                     // timed out without a new message: send a Status Connection Data (type 0x07, fields: utilization: f64)
