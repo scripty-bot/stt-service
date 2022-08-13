@@ -1,6 +1,6 @@
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
-use tokio::net::unix::SocketAddr;
-use tokio::net::UnixStream;
+use tokio::net::TcpStream;
 
 #[macro_use]
 extern crate tracing;
@@ -17,16 +17,17 @@ async fn main() {
     ));
     info!("loaded models");
 
-    info!("opening Unix Domain Socket");
-    let socket =
-        tokio::net::UnixListener::bind("/tmp/stts.sock").expect("failed to bind to socket");
-    info!("opened Unix Domain Socket");
+    info!("opening socket");
+    let socket = tokio::net::TcpListener::bind((IpAddr::from([0, 0, 0, 0]), 7269))
+        .await
+        .unwrap();
+    info!("opened socket");
 
     info!("polling for connections");
     loop {
         // accept connections and spawn a task for each one
         // or if ctrl+c is received, break the loop
-        let conn: tokio::io::Result<(UnixStream, SocketAddr)> = tokio::select! {
+        let conn: tokio::io::Result<(TcpStream, SocketAddr)> = tokio::select! {
             s = socket.accept() => s,
             _ = tokio::signal::ctrl_c() => break,
         };
@@ -41,10 +42,4 @@ async fn main() {
             Err(e) => println!("accept error: {}", e),
         }
     }
-
-    info!("caught Ctrl+C, closing Unix Domain Socket");
-    if let Err(e) = std::fs::remove_file("/tmp/stts.sock") {
-        error!("failed to remove socket: {}", e);
-    };
-    info!("exiting");
 }

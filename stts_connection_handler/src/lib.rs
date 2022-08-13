@@ -10,16 +10,16 @@ use stts_speech_to_text::{Error, SttStreamingState};
 use systemstat::LoadAverage;
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
+use tokio::net::TcpStream;
 
 pub struct ConnectionHandler {
-    stream: UnixStream,
+    stream: TcpStream,
     stt_stream: Option<SttStreamingState>,
     verbose: bool,
 }
 
-impl From<UnixStream> for ConnectionHandler {
-    fn from(stream: UnixStream) -> Self {
+impl From<TcpStream> for ConnectionHandler {
+    fn from(stream: TcpStream) -> Self {
         Self {
             stream,
             stt_stream: None,
@@ -252,7 +252,7 @@ impl ConnectionHandler {
         trace!("writing max_utilization");
         self.stream.write_f64(max_utilization).await?;
         trace!("writing can_overload");
-        self.stream.write_bool(can_overload).await?;
+        self.stream.write_u8(can_overload as u8).await?;
 
         let cpu_count = num_cpus::get() as f64;
         let mut error_count = 0;
@@ -309,7 +309,7 @@ impl ConnectionHandler {
     }
 }
 
-async fn read_string(stream: &mut UnixStream) -> io::Result<String> {
+async fn read_string(stream: &mut TcpStream) -> io::Result<String> {
     // strings are encoded as a u64 length followed by the string bytes
     let len = stream.read_u64().await?;
     let mut buf = vec![0u8; len as usize];
@@ -317,7 +317,7 @@ async fn read_string(stream: &mut UnixStream) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
-async fn write_string(stream: &mut UnixStream, string: &str) -> io::Result<()> {
+async fn write_string(stream: &mut TcpStream, string: &str) -> io::Result<()> {
     // strings are encoded as a u64 length followed by the string bytes
     // cache the bytes to prevent a second call to .as_bytes()
     let bytes = string.as_bytes();
