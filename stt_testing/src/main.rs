@@ -2,6 +2,7 @@ use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt, WriteBytesExt};
 use std::io;
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpStream};
+use std::time::Instant;
 
 fn main() {
     let test_file_path = std::env::args()
@@ -67,13 +68,16 @@ fn main() {
     println!("sending finalize streaming");
     socket.write_u8(0x02).expect("failed to write to socket");
     socket.flush().expect("failed to flush socket");
+    let st = Instant::now();
     println!("finalize streaming sent");
 
     // wait for the server to acknowledge the finalize streaming message
     assert_eq!(socket.read_u8().expect("failed to read from socket"), 0x02);
+    let et = Instant::now();
     // read a string from the server
     let s = read_string(&mut socket).expect("failed to read from socket");
     println!("{}", s);
+    println!("{}ns", (et - st).as_nanos());
 }
 
 fn read_string(stream: &mut TcpStream) -> io::Result<String> {
