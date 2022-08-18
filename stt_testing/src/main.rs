@@ -1,7 +1,7 @@
 use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt, WriteBytesExt};
 use std::io;
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use std::net::{IpAddr, TcpStream};
 
 fn main() {
     let test_file_path = std::env::args()
@@ -27,7 +27,8 @@ fn main() {
 
     // open a UDS socket from the client to the server
     // the socket is located at `/tmp/stts.sock`
-    let mut socket = UnixStream::connect("/tmp/stts.sock").expect("failed to connect to server");
+    let mut socket = TcpStream::connect((IpAddr::from([127, 0, 0, 1]), 7269))
+        .expect("failed to connect to server");
 
     // handshake with the server
     println!("sending handshake");
@@ -75,7 +76,7 @@ fn main() {
     println!("{}", s);
 }
 
-fn read_string(stream: &mut UnixStream) -> io::Result<String> {
+fn read_string(stream: &mut TcpStream) -> io::Result<String> {
     // strings are encoded as a u64 length followed by the string bytes
     let len = stream.read_u64::<NetworkEndian>()?;
     let mut buf = vec![0u8; len as usize];
@@ -83,7 +84,7 @@ fn read_string(stream: &mut UnixStream) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
-fn write_string(stream: &mut UnixStream, string: &str) -> io::Result<()> {
+fn write_string(stream: &mut TcpStream, string: &str) -> io::Result<()> {
     // strings are encoded as a u64 length followed by the string bytes
     // cache the bytes to prevent a second call to .as_bytes()
     let bytes = string.as_bytes();
