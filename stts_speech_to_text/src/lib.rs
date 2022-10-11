@@ -1,5 +1,5 @@
 use once_cell::sync::OnceCell;
-use std::path::Path;
+use std::fmt::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 
@@ -53,7 +53,7 @@ fn get_new_model() -> Option<WhisperContext> {
     }
 }
 
-async fn reap_model_async(model: WhisperContext) {
+async fn reap_model(model: WhisperContext) {
     trace!("reaping model");
     let models = MODELS.get().expect("models not initialized");
     // try to send the model back to the pool
@@ -67,7 +67,7 @@ async fn reap_model_async(model: WhisperContext) {
     }
 }
 
-fn create_model_params() -> FullParams {
+fn create_model_params() -> FullParams<'static> {
     let mut params = FullParams::new(DecodeStrategy::Greedy { n_past: 0 });
     params.set_n_threads(1);
     params.set_print_progress(false);
