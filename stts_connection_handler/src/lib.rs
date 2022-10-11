@@ -4,10 +4,8 @@
 extern crate tracing;
 
 use byteorder::ByteOrder;
-use std::fmt::Write;
 use std::time::Duration;
-use stts_speech_to_text::{get_load, Error, SttStreamingState};
-use systemstat::LoadAverage;
+use stts_speech_to_text::{get_load,  SttStreamingState};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
