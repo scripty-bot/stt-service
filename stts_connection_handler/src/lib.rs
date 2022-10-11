@@ -6,7 +6,7 @@ extern crate tracing;
 use byteorder::ByteOrder;
 use std::fmt::Write;
 use std::time::Duration;
-use stts_speech_to_text::{Error, get_load, SttStreamingState};
+use stts_speech_to_text::{get_load, Error, SttStreamingState};
 use systemstat::LoadAverage;
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -215,8 +215,10 @@ impl ConnectionHandler {
         // grab the required settings from command line args
         let max_utilization = std::env::args()
             .nth(2)
-            .and_then(|s| s.parse::<f64>().ok()).expect("max utilization should have been checked already")
-            .min(1.0) * 4.0;
+            .and_then(|s| s.parse::<f64>().ok())
+            .expect("max utilization should have been checked already")
+            .min(1.0)
+            * 4.0;
         info!("allowing max utilization of {}", max_utilization);
 
         let can_overload = std::env::args()
