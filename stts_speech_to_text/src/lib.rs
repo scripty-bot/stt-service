@@ -75,6 +75,7 @@ fn create_model_params() -> FullParams<'static> {
     params.set_print_timestamps(false);
     params.set_print_special_tokens(false);
     params.set_translate(true);
+    params.set_no_context(true);
 
     params
 }
