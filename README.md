@@ -5,7 +5,7 @@ The Scripty STT service is a simple server that handles remote audio transcoding
 ## Building
 
 This program is written in [Rust](https://rust-lang.org/). You will need to [install rust](https://rustup.rs) to build it.
-You will also need the libstdd.tflite.(os).zip file from [coqui-ai/STT](https://github.com/coqui-ai/STT/releases/). You should put them in /usr/local/lib.
+You will also need the libstt.tflite.(os).zip file from [coqui-ai/STT](https://github.com/coqui-ai/STT/releases/). You should put them in /usr/local/lib.
 
 Then, you can build with `cargo build --release`.
 
