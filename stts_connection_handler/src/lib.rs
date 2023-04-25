@@ -281,7 +281,7 @@ async fn write_string(stream: &mut TcpStream, string: &str) -> io::Result<()> {
     // cache the bytes to prevent a second call to .as_bytes()
     let bytes = string.as_bytes();
     let len = bytes.len() as u64;
-    stream.write_u64(len as u64).await?;
+    stream.write_u64(len).await?;
     stream.write_all(bytes).await?;
     Ok(())
 }

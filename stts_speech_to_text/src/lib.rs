@@ -67,13 +67,14 @@ async fn reap_model(model: WhisperContext) {
     }
 }
 
-fn create_model_params() -> FullParams<'static> {
-    let mut params = FullParams::new(DecodeStrategy::Greedy { n_past: 0 });
+fn create_model_params() -> FullParams<'static, 'static> {
+    let mut params = FullParams::new(SamplingStrategy::Greedy {
+        best_of: 1,
+    });
     params.set_n_threads(1);
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
-    params.set_print_special_tokens(false);
     params.set_translate(true);
     params.set_no_context(true);
 
