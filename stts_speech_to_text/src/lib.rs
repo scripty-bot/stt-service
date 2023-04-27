@@ -67,7 +67,7 @@ async fn reap_model(model: WhisperContext) {
     }
 }
 
-fn create_model_params() -> FullParams<'static, 'static> {
+fn create_model_params(language: &str) -> FullParams {
     let mut params = FullParams::new(SamplingStrategy::Greedy {
         best_of: 1,
     });
@@ -77,6 +77,7 @@ fn create_model_params() -> FullParams<'static, 'static> {
     params.set_print_timestamps(false);
     params.set_translate(true);
     params.set_no_context(true);
+    params.set_language(Some(language));
 
     params
 }
@@ -84,12 +85,14 @@ fn create_model_params() -> FullParams<'static, 'static> {
 /// A wrapper around a Stream that holds the Stream on one thread constantly.
 pub struct SttStreamingState {
     stream_data: Mutex<Vec<i16>>,
+    language: String,
 }
 
 impl SttStreamingState {
-    pub fn new() -> Self {
+    pub fn new(language: String) -> Self {
         Self {
             stream_data: Mutex::new(Vec::new()),
+            language
         }
     }
 
@@ -99,7 +102,7 @@ impl SttStreamingState {
     }
 
     pub async fn finish_stream(self, verbose: bool) -> Result<String, WhisperError> {
-        let Self { stream_data } = self;
+        let Self { stream_data, language } = self;
 
         // we own the stream data now, so we can drop the lock
         let audio_data = stream_data.into_inner();
@@ -112,7 +115,7 @@ impl SttStreamingState {
             let audio_data = convert_integer_to_float_audio_simd(&audio_data);
 
             // create model params
-            let params = create_model_params();
+            let params = create_model_params(&language);
 
             // get a model from the pool
             let mut model = get_new_model().expect("failed to get model from pool");

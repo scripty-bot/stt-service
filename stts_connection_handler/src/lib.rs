@@ -92,10 +92,10 @@ impl ConnectionHandler {
 
         // field 1: language: String
         trace!("reading language");
-        let _language = read_string(&mut self.stream).await?;
+        let language = read_string(&mut self.stream).await?;
 
         debug!("loading stream");
-        let stt_stream = SttStreamingState::new();
+        let stt_stream = SttStreamingState::new(language);
         debug!("loaded stream");
 
         self.stt_stream = Some(stt_stream);
