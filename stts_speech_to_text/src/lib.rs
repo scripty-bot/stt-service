@@ -75,7 +75,6 @@ fn create_model_params(language: &str) -> FullParams {
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
-    params.set_translate(true);
     params.set_no_context(true);
     params.set_language(Some(language));
 
