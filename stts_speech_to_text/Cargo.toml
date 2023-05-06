@@ -6,8 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-flume = "0.10"
 tracing = "0.1"
 once_cell = "1"
 tokio = { version = "1", features = ["full"] }
-whisper-rs = { version = "0.5.0", features = ["simd"] }
+whisper-rs = { git = "https://github.com/tazz4843/whisper-rs", branch = "cuda-and-opencl-support", features = ["simd"] }
