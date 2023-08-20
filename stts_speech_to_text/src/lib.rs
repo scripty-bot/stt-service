@@ -48,6 +48,7 @@ fn create_model_params(language: &str) -> FullParams {
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_no_context(true);
+    params.set_suppress_non_speech_tokens(true);
     params.set_language(Some(language));
 
     params
