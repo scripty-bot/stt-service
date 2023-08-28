@@ -92,7 +92,6 @@ impl SttStreamingState {
 
         // use tokio blocking threads to process the audio
         let (state, res) = tokio::task::spawn_blocking(move || {
-            let audio_data = audio_data;
             // process to mono 16KHz f32
             // the input is mono 16KHz i16
             let audio_data = convert_integer_to_float_audio_simd(&audio_data);

@@ -239,7 +239,7 @@ impl ConnectionHandler {
 
             // check what we got
             match timeout {
-                Ok(Ok(t)) if t == 0x03 => {
+                Ok(Ok(0x03))  => {
                     // 0x03: Close Connection
                     // close the connection
                     break Ok(true);
