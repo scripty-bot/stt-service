@@ -42,7 +42,7 @@ fn get_new_model() -> Option<WhisperState<'static>> {
 }
 
 fn create_model_params(language: &str) -> FullParams {
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: 0.0 });
     params.set_n_threads(1);
     params.set_print_progress(false);
     params.set_print_realtime(false);
@@ -50,6 +50,11 @@ fn create_model_params(language: &str) -> FullParams {
     params.set_no_context(true);
     params.set_suppress_non_speech_tokens(true);
     params.set_language(Some(language));
+
+    // ref: https://github.com/ggerganov/whisper.cpp/issues/896#issuecomment-1569586018
+    params.set_temperature_inc(0.1);
+    params.set_entropy_thold(2.8);
+    params.set_n_max_text_ctx(64);
 
     params
 }
