@@ -4,10 +4,8 @@
 extern crate tracing;
 
 use byteorder::ByteOrder;
-use std::fmt::Write;
 use std::time::Duration;
-use stts_speech_to_text::{Error, SttStreamingState};
-use systemstat::LoadAverage;
+use stts_speech_to_text::{get_load,  SttStreamingState};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -97,13 +95,7 @@ impl ConnectionHandler {
         let language = read_string(&mut self.stream).await?;
 
         debug!("loading stream");
-        let stt_stream = match SttStreamingState::new(language).await {
-            Some(s) => s,
-            None => {
-                self.stream.write_u8(0xFF).await?;
-                return Ok(true);
-            }
-        };
+        let stt_stream = SttStreamingState::new(language);
         debug!("loaded stream");
 
         self.stt_stream = Some(stt_stream);
@@ -130,7 +122,7 @@ impl ConnectionHandler {
         // fetch the model, if it doesn't exist, return and ignore this message
         trace!("fetching model");
         let stream = match self.stt_stream {
-            Some(ref mut model) => model,
+            Some(ref model) => model,
             None => return Ok(false),
         };
 
@@ -161,43 +153,28 @@ impl ConnectionHandler {
 
         if self.verbose {
             debug!("finalizing model");
-            match stream.finish_stream_with_metadata().await {
+            match stream.finish_stream(true).await {
                 Ok(r) => {
                     trace!("writing header");
                     self.stream.write_u8(0x03).await?;
-                    let num = r.num_transcripts();
                     trace!("writing num_transcripts");
-                    self.stream.write_u32(num).await?;
-                    if num != 0 {
-                        let transcripts = r.transcripts();
-                        let main_transcript = unsafe { transcripts.get_unchecked(0) };
-                        let tokens = main_transcript.tokens();
-                        let mut res = String::new();
-                        for token in tokens {
-                            res.write_str(token.text().as_ref())
-                                .expect("error writing to string");
-                        }
-                        trace!("writing transcript");
-                        write_string(&mut self.stream, &res).await?;
-                        trace!("writing confidence");
-                        let confidence = main_transcript.confidence();
-                        // the confidence percent is calculated as (-1 / confidence) * 200
-                        let pct_confidence = (-1.0 / confidence) * 200.0;
-                        self.stream.write_f64(pct_confidence).await?;
-                    }
+                    self.stream.write_u32(1).await?;
+                    trace!("writing transcript");
+                    write_string(&mut self.stream, &r).await?;
+                    trace!("writing confidence");
+                    self.stream.write_f64(f64::NAN).await?;
                 }
                 Err(e) => {
-                    warn!("error finalizing model: {}", e);
+                    warn!("error finalizing model: {:?}", e);
                     trace!("writing header");
                     self.stream.write_u8(0x04).await?;
-                    let num_err = conv_err(e);
                     trace!("writing error");
-                    self.stream.write_i64(num_err).await?;
+                    self.stream.write_i64(-1).await?;
                 }
             }
         } else {
             debug!("finalizing model");
-            match stream.finish_stream().await {
+            match stream.finish_stream(false).await {
                 Ok(s) => {
                     trace!("writing header");
                     self.stream.write_u8(0x02).await?;
@@ -205,12 +182,11 @@ impl ConnectionHandler {
                     write_string(&mut self.stream, &s).await?;
                 }
                 Err(e) => {
-                    warn!("error finalizing model: {}", e);
+                    warn!("error finalizing model: {:?}", e);
                     trace!("writing header");
                     self.stream.write_u8(0x04).await?;
-                    let num_err = conv_err(e);
                     trace!("writing error");
-                    self.stream.write_i64(num_err).await?;
+                    self.stream.write_i64(-1).await?;
                 }
             }
         }
@@ -238,9 +214,10 @@ impl ConnectionHandler {
         let max_utilization = std::env::args()
             .nth(2)
             .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(1.0)
-            .min(1.0);
-        info!("allowing max utilization of {}%", max_utilization * 100.0);
+            .expect("max utilization should have been checked already")
+            .min(1.0)
+            * 4.0;
+        info!("allowing max utilization of {}", max_utilization);
 
         let can_overload = std::env::args()
             .nth(3)
@@ -256,22 +233,13 @@ impl ConnectionHandler {
         trace!("writing can_overload");
         self.stream.write_u8(can_overload as u8).await?;
 
-        let cpu_count = num_cpus::get() as f64;
-        let mut error_count = 0;
-
         loop {
-            if error_count == 3 {
-                // throw an error
-                self.stream.write_u8(0xFF).await?;
-                return Ok(true);
-            }
-
             // wait for either 5 seconds, or for a message to be received
             let timeout = tokio::time::timeout(Duration::from_secs(5), self.stream.read_u8()).await;
 
             // check what we got
             match timeout {
-                Ok(Ok(t)) if t == 0x03 => {
+                Ok(Ok(0x03))  => {
                     // 0x03: Close Connection
                     // close the connection
                     break Ok(true);
@@ -283,18 +251,7 @@ impl ConnectionHandler {
                 Err(_) => {
                     // timed out without a new message: send a Status Connection Data (type 0x07, fields: utilization: f64)
 
-                    let LoadAverage { one, .. } = match systemstat::platform::unix::load_average() {
-                        Ok(la) => la,
-                        Err(e) => {
-                            warn!("error getting load average: {}", e);
-                            error_count += 1;
-                            continue;
-                        }
-                    };
-                    error_count = 0;
-
-                    // calculate the overall system utilization
-                    let utilization = one as f64 / cpu_count;
+                    let utilization = get_load() as f64;
 
                     // send data
                     trace!("writing header");
@@ -324,39 +281,7 @@ async fn write_string(stream: &mut TcpStream, string: &str) -> io::Result<()> {
     // cache the bytes to prevent a second call to .as_bytes()
     let bytes = string.as_bytes();
     let len = bytes.len() as u64;
-    stream.write_u64(len as u64).await?;
+    stream.write_u64(len).await?;
     stream.write_all(bytes).await?;
     Ok(())
-}
-
-fn conv_err(e: Error) -> i64 {
-    match e {
-        Error::NoModel => 2147483649,
-        Error::InvalidAlphabet => 0x2000,
-        Error::InvalidShape => 0x2001,
-        Error::InvalidScorer => 0x2002,
-        Error::ModelIncompatible => 0x2003,
-        Error::ScorerNotEnabled => 0x2004,
-        Error::ScorerUnreadable => 0x2005,
-        Error::ScorerInvalidHeader => 0x2006,
-        Error::ScorerNoTrie => 0x2007,
-        Error::ScorerInvalidTrie => 0x2008,
-        Error::ScorerVersionMismatch => 0x2009,
-        Error::InitMmapFailed => 0x3000,
-        Error::InitSessionFailed => 0x3001,
-        Error::InterpreterFailed => 0x3002,
-        Error::RunSessionFailed => 0x3003,
-        Error::CreateStreamFailed => 0x3004,
-        Error::ReadProtoBufFailed => 0x3005,
-        Error::CreateSessionFailed => 0x3006,
-        Error::CreateModelFailed => 0x3007,
-        Error::InsertHotWordFailed => 0x3008,
-        Error::ClearHotWordsFailed => 0x3009,
-        Error::EraseHotWordFailed => 0x3010,
-        Error::Other(n) => n as i64,
-        Error::Unknown => 2147483650,
-        Error::NulBytesFound => 2147483651,
-        Error::Utf8Error(_) => 2147483652,
-        _ => i64::MIN,
-    }
 }

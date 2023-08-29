@@ -1,5 +1,4 @@
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
 use tokio::net::TcpStream;
 
 #[macro_use]
@@ -10,17 +9,29 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     info!("loading models");
-    stts_speech_to_text::load_models(Path::new(
+    stts_speech_to_text::load_models(
         &std::env::args()
             .nth(1)
-            .expect("first argument should be path to model directory"),
-    ));
+            .expect("first argument should be path to model"),
+        std::env::args()
+            .nth(2)
+            .expect("second argument should be how many instances of model to load")
+            .parse::<usize>()
+            .expect("failed to parse number of instances as usize"),
+    );
     info!("loaded models");
 
+    let bind_addr = (
+        IpAddr::from([0, 0, 0, 0]),
+        match std::env::var("PORT") {
+            Ok(port) => port.parse().expect("PORT should be a number"),
+            Err(_) => 7269,
+        },
+    );
+    info!("listening on {}:{}", bind_addr.0, bind_addr.1);
+
     info!("opening socket");
-    let socket = tokio::net::TcpListener::bind((IpAddr::from([0, 0, 0, 0]), 7269))
-        .await
-        .unwrap();
+    let socket = tokio::net::TcpListener::bind(bind_addr).await.unwrap();
     info!("opened socket");
 
     info!("polling for connections");
