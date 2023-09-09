@@ -32,8 +32,12 @@ pub fn load_models(model_path: &str, instances: usize) {
 fn get_new_model() -> Option<WhisperState<'static>> {
     // if we got a model, return it
     // on error, log it and return None
-    match MODEL.get() {
-        Some(ctx) => ctx.create_state().ok(),
+    match MODEL.get().map(|ctx| ctx.create_state()) {
+        Some(Ok(state)) => Some(state),
+        Some(Err(e)) => {
+            error!("failed to create model: {:?}", e);
+            None
+        }
         None => {
             error!("models not set up yet: check that load_models was called");
             None
