@@ -19,7 +19,13 @@ pub fn get_load() -> usize {
 
 pub fn load_models(model_path: &str, instances: usize) {
     info!("attempting to load model");
-    let model = WhisperContext::new(model_path).expect("failed to load model");
+    let mut model = WhisperContext::new(model_path).expect("failed to load model");
+    if !model.init_openvino_encoder(None, "GPU", None) {
+        error!("failed to initalize OpenVINO: exiting");
+        std::process::exit(1);
+    } else {
+        info!("initialized OpenVINO");
+    }
     MODEL.set(model).expect("failed to set models");
     info!("loaded model");
 
@@ -95,6 +101,7 @@ impl SttStreamingState {
             .expect("semaphore should not be closed");
 
         // use tokio blocking threads to process the audio
+        let st = std::time::Instant::now();
         let (state, res) = tokio::task::spawn_blocking(move || {
             // process to mono 16KHz f32
             // the input is mono 16KHz i16
@@ -117,6 +124,8 @@ impl SttStreamingState {
         })
         .await
         .expect("model thread panicked (should never happen)");
+        let et = std::time::Instant::now();
+        debug!("model took {}ms", (et - st).as_millis());
 
         // check if the model failed
         if let Err(e) = res {
