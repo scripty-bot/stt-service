@@ -5,7 +5,7 @@ extern crate tracing;
 
 use byteorder::ByteOrder;
 use std::time::Duration;
-use stts_speech_to_text::{get_load,  SttStreamingState};
+use stts_speech_to_text::{get_load, SttStreamingState};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -243,7 +243,7 @@ impl ConnectionHandler {
 
             // check what we got
             match timeout {
-                Ok(Ok(0x03))  => {
+                Ok(Ok(0x03)) => {
                     // 0x03: Close Connection
                     // close the connection
                     break Ok(true);
