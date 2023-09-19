@@ -169,7 +169,7 @@ impl ConnectionHandler {
                     trace!("writing header");
                     self.stream.write_u8(0x04).await?;
                     trace!("writing error");
-                    self.stream.write_i64(-1).await?;
+                    self.stream.write_i64(e.into()).await?;
                 }
             }
         } else {
@@ -186,7 +186,7 @@ impl ConnectionHandler {
                     trace!("writing header");
                     self.stream.write_u8(0x04).await?;
                     trace!("writing error");
-                    self.stream.write_i64(-1).await?;
+                    self.stream.write_i64(e.into()).await?;
                 }
             }
         }
