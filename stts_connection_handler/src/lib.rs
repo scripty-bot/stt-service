@@ -49,7 +49,7 @@ impl ConnectionHandler {
                     break;
                 }
             };
-            debug!("received command: {:02x}", t);
+            trace!("received command: {:02x}", t);
             let res = match t {
                 0x00 => self.handle_0x00().await,
                 0x01 => self.handle_0x01().await,
@@ -62,7 +62,7 @@ impl ConnectionHandler {
                     break;
                 }
             };
-            debug!("handled command: {:02x}", t);
+            trace!("handled command: {:02x}", t);
 
             match res {
                 Ok(e) if e => break,
@@ -123,7 +123,10 @@ impl ConnectionHandler {
         trace!("fetching model");
         let stream = match self.stt_stream {
             Some(ref model) => model,
-            None => return Ok(false),
+            None => {
+                warn!("no model loaded");
+                return Ok(false);
+            }
         };
 
         // if the model exists, *then* spend the handful of CPU cycles to process the audio data
@@ -132,7 +135,7 @@ impl ConnectionHandler {
         byteorder::NetworkEndian::read_i16_into(&buf, &mut data);
         trace!("found {} samples", data.len());
 
-        debug!("feeding data");
+        trace!("feeding data");
         // feed the audio data to the model
         stream.feed_audio(data).await;
 
@@ -190,6 +193,7 @@ impl ConnectionHandler {
                 }
             }
         }
+        debug!("finalized model");
 
         Ok(true)
     }
