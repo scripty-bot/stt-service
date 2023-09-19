@@ -1,7 +1,9 @@
 use once_cell::sync::OnceCell;
-use std::fmt::Write;
+use std::fmt;
+use std::fmt::{Formatter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
 
 pub use whisper_rs::*;
@@ -58,6 +60,44 @@ fn create_model_params(language: &str) -> FullParams {
     params
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum SttError {
+    Whisper(WhisperError),
+    Timeout,
+}
+
+impl From<WhisperError> for SttError {
+    fn from(e: WhisperError) -> Self {
+        Self::Whisper(e)
+    }
+}
+
+impl From<tokio::time::error::Elapsed> for SttError {
+    fn from(_: tokio::time::error::Elapsed) -> Self {
+        Self::Timeout
+    }
+}
+
+impl std::error::Error for SttError {}
+
+impl fmt::Display for SttError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Whisper(e) => write!(f, "Whisper error: {}", e),
+            Self::Timeout => write!(f, "Timeout"),
+        }
+    }
+}
+
+impl Into<i64> for SttError {
+    fn into(self) -> i64 {
+        match self {
+            Self::Whisper(_) => -1,
+            Self::Timeout => i64::MIN,
+        }
+    }
+}
+
 /// A wrapper around a Stream that holds the Stream on one thread constantly.
 pub struct SttStreamingState {
     stream_data: Mutex<Vec<i16>>,
@@ -77,7 +117,7 @@ impl SttStreamingState {
         data.append(&mut audio);
     }
 
-    pub async fn finish_stream(self, verbose: bool) -> Result<String, WhisperError> {
+    pub async fn finish_stream(self, verbose: bool) -> Result<String, SttError> {
         let Self {
             stream_data,
             language,
@@ -86,6 +126,7 @@ impl SttStreamingState {
         // we own the stream data now, so we can drop the lock
         let audio_data = stream_data.into_inner();
 
+        debug!("waiting for semaphore");
         let permit = MAX_CONCURRENCY
             .get()
             .expect("max concurrency not set")
@@ -93,35 +134,40 @@ impl SttStreamingState {
             .acquire_owned()
             .await
             .expect("semaphore should not be closed");
+        debug!("got semaphore");
 
         // use tokio blocking threads to process the audio
-        let (state, res) = tokio::task::spawn_blocking(move || {
-            // process to mono 16KHz f32
-            // the input is mono 16KHz i16
-            let audio_data = convert_integer_to_float_audio_simd(&audio_data);
+        let audio_process_task = tokio::time::timeout(
+            Duration::from_secs(15),
+            tokio::task::spawn_blocking(move || {
+                // process to mono 16KHz f32
+                // the input is mono 16KHz i16
+                let audio_data = convert_integer_to_float_audio_simd(&audio_data);
 
-            // create model params
-            let params = create_model_params(&language);
+                // create model params
+                let params = create_model_params(&language);
 
-            // get a model from the pool
-            let mut state = get_new_model().expect("failed to get model from pool");
+                // get a model from the pool
+                let mut state = get_new_model().expect("failed to get model from pool");
 
-            // run the model
-            let res = state.full(params, &audio_data);
+                // run the model
+                let res = state.full(params, &audio_data);
 
-            // for all intents and purposes, we are done with the model
-            drop(permit);
+                // for all intents and purposes, we are done with the model
+                drop(permit);
 
-            // return the model and the result to the async context
-            (state, res)
-        })
-        .await
-        .expect("model thread panicked (should never happen)");
+                // return the model and the result to the async context
+                (state, res)
+            }),
+        );
+        let (state, res) = audio_process_task
+            .await?
+            .expect("model thread panicked (should never happen)");
 
         // check if the model failed
         if let Err(e) = res {
             error!("model failed: {:?}", e);
-            return Err(e);
+            return Err(e.into());
         }
 
         // get the result
@@ -143,7 +189,7 @@ impl SttStreamingState {
                 }
                 (Err(e), _) => {
                     error!("failed to get segment text: {:?}", e);
-                    return Err(e);
+                    return Err(e.into());
                 }
             };
         }
