@@ -5,7 +5,7 @@ extern crate tracing;
 
 use byteorder::ByteOrder;
 use std::time::Duration;
-use stts_speech_to_text::{get_load, SttStreamingState};
+use stts_speech_to_text::{get_load, SttStreamingState, WhisperError};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -172,7 +172,7 @@ impl ConnectionHandler {
                     trace!("writing header");
                     self.stream.write_u8(0x04).await?;
                     trace!("writing error");
-                    self.stream.write_i64(e.into()).await?;
+                    self.stream.write_i64(convert_error_to_i64(e)).await?;
                 }
             }
         } else {
@@ -189,7 +189,7 @@ impl ConnectionHandler {
                     trace!("writing header");
                     self.stream.write_u8(0x04).await?;
                     trace!("writing error");
-                    self.stream.write_i64(e.into()).await?;
+                    self.stream.write_i64(convert_error_to_i64(e)).await?;
                 }
             }
         }
@@ -288,4 +288,25 @@ async fn write_string(stream: &mut TcpStream, string: &str) -> io::Result<()> {
     stream.write_u64(len).await?;
     stream.write_all(bytes).await?;
     Ok(())
+}
+
+fn convert_error_to_i64(e: WhisperError) -> i64 {
+    match e {
+        WhisperError::InitError => i64::MIN + 1,
+        WhisperError::SpectrogramNotInitialized => i64::MIN + 2,
+        WhisperError::EncodeNotComplete => i64::MIN + 3,
+        WhisperError::DecodeNotComplete => i64::MIN + 4,
+        WhisperError::UnableToCalculateSpectrogram => i64::MIN + 5,
+        WhisperError::UnableToCalculateEvaluation => i64::MIN + 6,
+        WhisperError::FailedToEncode => i64::MIN + 7,
+        WhisperError::FailedToDecode => i64::MIN + 8,
+        WhisperError::InvalidMelBands => i64::MIN + 9,
+        WhisperError::InvalidThreadCount => i64::MIN + 10,
+        WhisperError::InvalidUtf8 { .. } => i64::MIN + 11,
+        WhisperError::NullByteInString { .. } => i64::MIN + 12,
+        WhisperError::NullPointer => i64::MIN + 13,
+        WhisperError::GenericError(c) => c as i64,
+        WhisperError::InvalidText => i64::MIN + 14,
+        WhisperError::FailedToCreateState => i64::MIN + 15,
+    }
 }
