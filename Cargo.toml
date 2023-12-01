@@ -24,3 +24,15 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 stts_speech_to_text = { path = "stts_speech_to_text" }
 stts_connection_handler = { path = "stts_connection_handler" }
+
+[features]
+default = ["simd"]
+
+cuda = ["stts_speech_to_text/cuda"]
+simd = ["stts_speech_to_text/simd"]
+
+# These additional backends have not been tested
+coreml = ["stts_speech_to_text/coreml"]
+metal = ["stts_speech_to_text/metal"]
+openblas = ["stts_speech_to_text/openblas"]
+opencl = ["stts_speech_to_text/opencl"]
