@@ -9,4 +9,12 @@ edition = "2021"
 tracing = "0.1"
 once_cell = "1"
 tokio = { version = "1", features = ["full"] }
-whisper-rs = { git = "https://github.com/tazz4843/whisper-rs", features = ["simd"] }
+whisper-rs = { git = "https://github.com/tazz4843/whisper-rs" }
+
+[features]
+coreml = ["whisper-rs/coreml"]
+cuda = ["whisper-rs/cuda"]
+metal = ["whisper-rs/metal"]
+openblas = ["whisper-rs/openblas"]
+opencl = ["whisper-rs/opencl"]
+simd = ["whisper-rs/simd"]
