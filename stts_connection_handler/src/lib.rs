@@ -3,310 +3,357 @@
 #[macro_use]
 extern crate tracing;
 
-use byteorder::ByteOrder;
-use std::time::Duration;
-use stts_speech_to_text::{get_load, SttStreamingState, WhisperError};
-use tokio::io;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use std::{
+	fmt::{Debug, Display, Formatter},
+	net::SocketAddr,
+	time::Duration,
+};
 
-pub struct ConnectionHandler {
-    stream: TcpStream,
-    stt_stream: Option<SttStreamingState>,
-    verbose: bool,
+use byteorder::ByteOrder;
+use dashmap::DashMap;
+use scripty_common::stt_transport_models::{
+	AudioData,
+	ClientToServerMessage,
+	FinalizeStreaming,
+	InitializationComplete,
+	InitializeStreaming,
+	ServerToClientMessage,
+	SttError,
+	SttSuccess,
+};
+use stts_speech_to_text::{get_load, SttStreamingState};
+use tokio::{
+	io,
+	io::{AsyncReadExt, AsyncWriteExt},
+	net::{
+		tcp::{OwnedReadHalf, OwnedWriteHalf},
+		TcpStream,
+	},
+	time::Instant,
+};
+use uuid::Uuid;
+
+macro_rules! is_recoverable_handler {
+	($result: expr) => {
+		match $result {
+			Ok(res) => res,
+			Err(e) => {
+				error!("error reading message: {}", e);
+				if e.is_recoverable() {
+					continue;
+				} else {
+					break;
+				}
+			}
+		}
+	};
 }
 
-impl From<TcpStream> for ConnectionHandler {
-    fn from(stream: TcpStream) -> Self {
-        Self {
-            stream,
-            stt_stream: None,
-            verbose: false,
-        }
-    }
+pub struct ConnectionHandler {
+	internal_rx:     OwnedReadHalf,
+	internal_tx:     OwnedWriteHalf,
+	last_timeout:    Instant,
+	peer_address:    SocketAddr,
+	stt_streams:     DashMap<Uuid, SttStreamingState>,
+	shutdown_handle: tokio::sync::broadcast::Receiver<()>,
 }
 
 impl ConnectionHandler {
-    /// Enter the main loop of the connection handler.
-    pub async fn handle(&mut self) {
-        loop {
-            debug!("waiting for command");
-            // read the type of the next incoming message
-            let t: io::Result<u8> = tokio::select! {
-                t = self.stream.read_u8() => t,
-                _ = tokio::signal::ctrl_c() => {
-                    let _ = self.stream.write_u8(0x05).await;
-                    break;
-                },
-            };
+	pub fn new(
+		internal_stream: TcpStream,
+		peer_address: SocketAddr,
+		shutdown_handle: tokio::sync::broadcast::Receiver<()>,
+	) -> Self {
+		let (internal_rx, internal_tx) = internal_stream.into_split();
+		Self {
+			internal_rx,
+			internal_tx,
+			peer_address,
+			shutdown_handle,
+			last_timeout: Instant::now(),
+			stt_streams: DashMap::new(),
+		}
+	}
 
-            let t = match t {
-                Ok(t) => t,
-                Err(e) => {
-                    error!("error reading message type: {}", e);
-                    let _ = self.stream.write_u8(0xFD).await;
-                    let _ = write_string(&mut self.stream, &e.to_string()).await;
-                    break;
-                }
-            };
-            trace!("received command: {:02x}", t);
-            let res = match t {
-                0x00 => self.handle_0x00().await,
-                0x01 => self.handle_0x01().await,
-                0x02 => self.handle_0x02().await,
-                0x03 => self.handle_0x03().await,
-                0x04 => self.handle_0x04().await,
-                _ => {
-                    warn!("unknown message type: {}", t);
-                    let _ = self.stream.write_u8(0xFE).await.map(|_| false);
-                    break;
-                }
-            };
-            trace!("handled command: {:02x}", t);
+	/// Enter the main loop of the connection handler.
+	pub async fn handle(&mut self) {
+		// write the initial status message
+		let max_utilization = std::env::args()
+			.nth(2)
+			.and_then(|s| s.parse::<f64>().ok())
+			.expect("max utilization should have been checked already")
+			.min(1.0) * 4.0;
+		info!("allowing max utilization of {}", max_utilization);
 
-            match res {
-                Ok(e) if e => break,
-                Err(e) => {
-                    error!("error writing message: {}", e);
-                    let _ = self.stream.write_u8(0xFD).await;
-                    let _ = write_string(&mut self.stream, &e.to_string()).await;
-                    break;
-                }
-                _ => {}
-            };
-        }
-        debug!("exiting");
-        // shutdown the connection
-        if let Err(e) = self.stream.shutdown().await {
-            error!("error shutting down connection: {}", e);
-        }
-    }
+		let can_overload = std::env::args()
+			.nth(3)
+			.and_then(|s| s.parse::<bool>().ok())
+			.unwrap_or(false);
+		info!("can_overload: {}", can_overload);
 
-    async fn handle_0x00(&mut self) -> io::Result<bool> {
-        // 0x00: Initialize Streaming
+		if let Err(e) = self
+			.send_message(ServerToClientMessage::StatusConnectionOpen(
+				scripty_common::stt_transport_models::StatusConnectionOpen {
+					max_utilization,
+					can_overload,
+				},
+			))
+			.await
+		{
+			error!("error sending status message: {}", e);
+			// we can try sending an error, but if that fails we should just give up
+			if let Err(e) = self
+				.send_message(ServerToClientMessage::FatalIoError(
+					scripty_common::stt_transport_models::FatalIoError {
+						error: e.to_string(),
+					},
+				))
+				.await
+			{
+				error!("error sending fatal error message: {}", e);
+			}
+			return; // don't continue if we can't send the status message
+		}
 
-        // field 0: verbose: bool
-        // read as a u8, then convert to bool
-        trace!("reading verbose");
-        let verbose = self.stream.read_u8().await? != 0;
+		loop {
+			debug!("waiting for message");
+			// read a message
+			let msg = if let Some(msg) = is_recoverable_handler!(self.read_message().await) {
+				msg
+			} else {
+				// timed out, write another status message and update the timeout
+				is_recoverable_handler!(
+					self.send_message(ServerToClientMessage::StatusConnectionData(
+						scripty_common::stt_transport_models::StatusConnectionData {
+							utilization: get_load() as f64,
+						}
+					))
+					.await
+				);
+				self.last_timeout = Instant::now();
 
-        // field 1: language: String
-        trace!("reading language");
-        let language = read_string(&mut self.stream).await?;
+				// check if we should shutdown
+				if self.shutdown_handle.try_recv().is_ok() {
+					break;
+				} else {
+					continue;
+				}
+			};
 
-        debug!("loading stream");
-        let stt_stream = SttStreamingState::new(language);
-        debug!("loaded stream");
+			match msg {
+				ClientToServerMessage::InitializeStreaming(InitializeStreaming {
+					verbose,
+					language,
+					id,
+				}) => {
+					// create a new model
+					let stream = SttStreamingState::new(language, verbose);
+					// store the model
+					self.stt_streams.insert(id, stream);
+					// send success
+					is_recoverable_handler!(
+						self.send_message(ServerToClientMessage::InitializationComplete(
+							InitializationComplete { id }
+						))
+						.await
+					);
+				}
+				ClientToServerMessage::AudioData(AudioData { data, id }) => {
+					// fetch the model
 
-        self.stt_stream = Some(stt_stream);
-        self.verbose = verbose;
-        // success!
-        self.stream.write_u8(0x00).await?;
+					// we have to check this first because we cannot send a message in the None
+					// case due to the borrow checker (&mut self + &self)
+					if !self.stt_streams.contains_key(&id) {
+						warn!("no model loaded for id {}", id);
+						is_recoverable_handler!(
+							self.send_message(ServerToClientMessage::SttError(SttError {
+								id,
+								error: "no model loaded for this id".to_string(),
+							}))
+							.await
+						);
+						continue; // just ignore this message
+					}
 
-        Ok(false)
-    }
+					let stream = match self.stt_streams.get(&id) {
+						Some(stream) => stream,
+						None => {
+							unreachable!("already asserted that the key exists, but it doesn't")
+						}
+					};
+					// feed the audio data to the model
+					stream.feed_audio(data).await;
+					// we don't need to send a response
+				}
+				ClientToServerMessage::FinalizeStreaming(FinalizeStreaming { id }) => {
+					let (id, stream) = match self.stt_streams.remove(&id) {
+						Some(stream) => stream,
+						None => {
+							warn!("no model loaded for id {}", id);
+							is_recoverable_handler!(
+								self.send_message(ServerToClientMessage::SttError(SttError {
+									id,
+									error: "no model loaded for this id".to_string(),
+								}))
+								.await
+							);
+							continue; // ignore this message
+						}
+					};
+					let final_result = match stream.finish_stream().await {
+						Ok(result) => ServerToClientMessage::SttResult(SttSuccess { id, result }),
+						Err(e) => ServerToClientMessage::SttError(SttError {
+							id,
+							error: e.to_string(),
+						}),
+					};
 
-    async fn handle_0x01(&mut self) -> io::Result<bool> {
-        // 0x01: Audio Data;
+					is_recoverable_handler!(self.send_message(final_result).await);
+				}
+				ClientToServerMessage::CloseConnection => break,
+			}
+		}
+		info!("closing connection from {}", self.peer_address);
+		// shutdown the connection
+		if let Err(e) = self.internal_tx.shutdown().await {
+			error!(
+				"error shutting down connection from {}: {}",
+				self.peer_address, e
+			);
+		}
+	}
 
-        // field 0: data_len: u32
-        trace!("reading data length");
-        let data_len = self.stream.read_u32().await?;
-        trace!("need to read {} bytes", data_len);
+	async fn send_message(
+		&mut self,
+		msg: ServerToClientMessage,
+	) -> Result<(), ConnectionHandlerError> {
+		// serialize the message with msgpack
+		let mut payload = Vec::new();
+		rmp_serde::encode::write(&mut payload, &msg)?;
 
-        // field 1: data: Vec<i16>, of length data_len/2, in NetworkEndian order
-        trace!("reading data");
-        let mut buf = vec![0; data_len as usize];
-        self.stream.read_exact(&mut buf).await?;
+		// prepare the payload size
+		let payload_size = payload.len() as u64;
+		let mut buf = [0; 8];
+		byteorder::NetworkEndian::write_u64(&mut buf, payload_size);
 
-        // fetch the model, if it doesn't exist, return and ignore this message
-        trace!("fetching model");
-        let stream = match self.stt_stream {
-            Some(ref model) => model,
-            None => {
-                warn!("no model loaded");
-                return Ok(false);
-            }
-        };
+		// write the magic bytes
+		self.internal_tx
+			.write_all(&scripty_common::MAGIC_BYTES)
+			.await?;
+		// write the payload size
+		self.internal_tx.write_all(&buf).await?;
+		// write the payload
+		self.internal_tx.write_all(&payload).await?;
+		Ok(())
+	}
 
-        // if the model exists, *then* spend the handful of CPU cycles to process the audio data
-        trace!("processing audio data");
-        let mut data = vec![0; (data_len / 2) as usize];
-        byteorder::NetworkEndian::read_i16_into(&buf, &mut data);
-        trace!("found {} samples", data.len());
+	/// Read a message from the connection.
+	///
+	/// Returns `Ok(None)` if the five-second timeout is reached.
+	async fn read_message(
+		&mut self,
+	) -> Result<Option<ClientToServerMessage>, ConnectionHandlerError> {
+		// read 4 magic bytes
+		let mut magic = [0; 4];
 
-        trace!("feeding data");
-        // feed the audio data to the model
-        stream.feed_audio(data).await;
+		// start by reading only one byte with a timeout of 5 seconds
+		match tokio::time::timeout_at(
+			self.last_timeout + Duration::from_secs(5),
+			self.internal_rx.read_exact(&mut magic[0..1]),
+		)
+		.await
+		{
+			Ok(Ok(num)) => {
+				if num != 1 {
+					// if we didn't get one byte, return an error
+					return Err(ConnectionHandlerError::Io(io::Error::new(
+						io::ErrorKind::UnexpectedEof,
+						"failed to read magic bytes",
+					)));
+				}
+				// if we got the first byte, read the rest
+				self.internal_rx.read_exact(&mut magic[1..]).await?;
+			}
+			Ok(Err(e)) => {
+				// if we got an error, return it
+				return Err(e.into());
+			}
+			Err(_) => {
+				// if we timed out, return Ok(None)
+				return Ok(None);
+			}
+		};
 
-        Ok(false)
-    }
+		// check the magic bytes
+		if magic != scripty_common::MAGIC_BYTES {
+			warn!("invalid magic bytes: {:?}", magic);
+			return Err(ConnectionHandlerError::InvalidMagicBytes(magic));
+		}
 
-    async fn handle_0x02(&mut self) -> io::Result<bool> {
-        // 0x02: Finalize Streaming
+		// read the payload size as a u64
+		let mut buf = [0; 8];
+		self.internal_rx.read_exact(&mut buf).await?;
+		let payload_size = byteorder::NetworkEndian::read_u64(&buf);
 
-        // no fields
+		// read payload size bytes
+		let mut payload = vec![0; payload_size as usize];
+		self.internal_rx.read_exact(&mut payload).await?;
 
-        // fetch the model, if it doesn't exist, return and ignore this message
-        trace!("fetching model");
-        let stream = match self.stt_stream.take() {
-            Some(model) => model,
-            None => return Ok(false),
-        };
-
-        if self.verbose {
-            debug!("finalizing model");
-            match stream.finish_stream(true).await {
-                Ok(r) => {
-                    trace!("writing header");
-                    self.stream.write_u8(0x03).await?;
-                    trace!("writing num_transcripts");
-                    self.stream.write_u32(1).await?;
-                    trace!("writing transcript");
-                    write_string(&mut self.stream, &r).await?;
-                    trace!("writing confidence");
-                    self.stream.write_f64(f64::NAN).await?;
-                }
-                Err(e) => {
-                    warn!("error finalizing model: {:?}", e);
-                    trace!("writing header");
-                    self.stream.write_u8(0x04).await?;
-                    trace!("writing error");
-                    self.stream.write_i64(convert_error_to_i64(e)).await?;
-                }
-            }
-        } else {
-            debug!("finalizing model");
-            match stream.finish_stream(false).await {
-                Ok(s) => {
-                    trace!("writing header");
-                    self.stream.write_u8(0x02).await?;
-                    trace!("writing transcript");
-                    write_string(&mut self.stream, &s).await?;
-                }
-                Err(e) => {
-                    warn!("error finalizing model: {:?}", e);
-                    trace!("writing header");
-                    self.stream.write_u8(0x04).await?;
-                    trace!("writing error");
-                    self.stream.write_i64(convert_error_to_i64(e)).await?;
-                }
-            }
-        }
-        debug!("finalized model");
-
-        Ok(true)
-    }
-
-    async fn handle_0x03(&mut self) -> io::Result<bool> {
-        // 0x03: Close Connection
-
-        // no fields
-
-        // immediately close the connection
-        Ok(true)
-    }
-
-    async fn handle_0x04(&mut self) -> io::Result<bool> {
-        // 0x04: Convert to Status
-
-        // no fields
-
-        // send current status
-
-        // grab the required settings from command line args
-        let max_utilization = std::env::args()
-            .nth(2)
-            .and_then(|s| s.parse::<f64>().ok())
-            .expect("max utilization should have been checked already")
-            .min(1.0)
-            * 4.0;
-        info!("allowing max utilization of {}", max_utilization);
-
-        let can_overload = std::env::args()
-            .nth(3)
-            .and_then(|s| s.parse::<bool>().ok())
-            .unwrap_or(false);
-        info!("can_overload: {}", can_overload);
-
-        // send Status Connection Open (type: 0x06, fields: max_utilization: f64, can_overload: bool)
-        trace!("writing header");
-        self.stream.write_u8(0x06).await?;
-        trace!("writing max_utilization");
-        self.stream.write_f64(max_utilization).await?;
-        trace!("writing can_overload");
-        self.stream.write_u8(can_overload as u8).await?;
-
-        loop {
-            // wait for either 5 seconds, or for a message to be received
-            let timeout = tokio::time::timeout(Duration::from_secs(5), self.stream.read_u8()).await;
-
-            // check what we got
-            match timeout {
-                Ok(Ok(0x03)) => {
-                    // 0x03: Close Connection
-                    // close the connection
-                    break Ok(true);
-                }
-                Ok(Err(e)) => {
-                    // IO error: return it
-                    return Err(e);
-                }
-                Err(_) => {
-                    // timed out without a new message: send a Status Connection Data (type 0x07, fields: utilization: f64)
-
-                    let utilization = get_load() as f64;
-
-                    // send data
-                    trace!("writing header");
-                    self.stream.write_u8(0x07).await?;
-                    trace!("writing utilization");
-                    self.stream.write_f64(utilization).await?;
-                    // done!
-                }
-                _ => {
-                    // anything else is a no-op
-                }
-            }
-        }
-    }
+		// deserialize the payload with msgpack
+		Ok(Some(rmp_serde::from_slice::<ClientToServerMessage>(
+			&payload,
+		)?))
+	}
 }
 
-async fn read_string(stream: &mut TcpStream) -> io::Result<String> {
-    // strings are encoded as a u64 length followed by the string bytes
-    let len = stream.read_u64().await?;
-    let mut buf = vec![0u8; len as usize];
-    stream.read_exact(&mut buf).await?;
-    Ok(String::from_utf8_lossy(&buf).to_string())
+#[derive(Debug)]
+pub enum ConnectionHandlerError {
+	Io(io::Error),
+	MsgPackDecode(rmp_serde::decode::Error),
+	MsgPackEncode(rmp_serde::encode::Error),
+	InvalidMagicBytes([u8; 4]),
 }
 
-async fn write_string(stream: &mut TcpStream, string: &str) -> io::Result<()> {
-    // strings are encoded as a u64 length followed by the string bytes
-    // cache the bytes to prevent a second call to .as_bytes()
-    let bytes = string.as_bytes();
-    let len = bytes.len() as u64;
-    stream.write_u64(len).await?;
-    stream.write_all(bytes).await?;
-    Ok(())
+impl Display for ConnectionHandlerError {
+	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+		match self {
+			ConnectionHandlerError::Io(e) => write!(f, "IO error: {}", e),
+			ConnectionHandlerError::MsgPackDecode(e) => write!(f, "MsgPack decode error: {}", e),
+			ConnectionHandlerError::MsgPackEncode(e) => write!(f, "MsgPack encode error: {}", e),
+			ConnectionHandlerError::InvalidMagicBytes(bytes) => {
+				write!(f, "invalid magic bytes: {:?}", bytes)
+			}
+		}
+	}
 }
 
-fn convert_error_to_i64(e: WhisperError) -> i64 {
-    match e {
-        WhisperError::InitError => i64::MIN + 1,
-        WhisperError::SpectrogramNotInitialized => i64::MIN + 2,
-        WhisperError::EncodeNotComplete => i64::MIN + 3,
-        WhisperError::DecodeNotComplete => i64::MIN + 4,
-        WhisperError::UnableToCalculateSpectrogram => i64::MIN + 5,
-        WhisperError::UnableToCalculateEvaluation => i64::MIN + 6,
-        WhisperError::FailedToEncode => i64::MIN + 7,
-        WhisperError::FailedToDecode => i64::MIN + 8,
-        WhisperError::InvalidMelBands => i64::MIN + 9,
-        WhisperError::InvalidThreadCount => i64::MIN + 10,
-        WhisperError::InvalidUtf8 { .. } => i64::MIN + 11,
-        WhisperError::NullByteInString { .. } => i64::MIN + 12,
-        WhisperError::NullPointer => i64::MIN + 13,
-        WhisperError::GenericError(c) => c as i64,
-        WhisperError::InvalidText => i64::MIN + 14,
-        WhisperError::FailedToCreateState => i64::MIN + 15,
-    }
+impl std::error::Error for ConnectionHandlerError {}
+
+impl ConnectionHandlerError {
+	fn is_recoverable(&self) -> bool {
+		match self {
+			ConnectionHandlerError::Io(_) => false,
+			ConnectionHandlerError::MsgPackDecode(_) => true,
+			ConnectionHandlerError::MsgPackEncode(_) => true,
+			ConnectionHandlerError::InvalidMagicBytes(_) => false,
+		}
+	}
+}
+
+impl From<io::Error> for ConnectionHandlerError {
+	fn from(e: io::Error) -> Self {
+		ConnectionHandlerError::Io(e)
+	}
+}
+
+impl From<rmp_serde::decode::Error> for ConnectionHandlerError {
+	fn from(e: rmp_serde::decode::Error) -> Self {
+		ConnectionHandlerError::MsgPackDecode(e)
+	}
+}
+
+impl From<rmp_serde::encode::Error> for ConnectionHandlerError {
+	fn from(e: rmp_serde::encode::Error) -> Self {
+		ConnectionHandlerError::MsgPackEncode(e)
+	}
 }

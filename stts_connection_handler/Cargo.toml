@@ -6,7 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+uuid = "1"
+dashmap = "5"
 tracing = "0.1"
 byteorder = "1"
+rmp-serde = "1"
 tokio = { version = "1", features = ["full"] }
 stts_speech_to_text = { path = "../stts_speech_to_text" }
+scripty-common = { git = "https://github.com/scripty-bot/scripty-common", branch = "main" }

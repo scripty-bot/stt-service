@@ -1,99 +1,155 @@
+use std::{
+	io,
+	io::{Read, Write},
+	net::{IpAddr, TcpStream},
+	time::Instant,
+};
+
 use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt, WriteBytesExt};
-use std::io;
-use std::io::{Read, Write};
-use std::net::{IpAddr, TcpStream};
-use std::time::Instant;
+use scripty_common::stt_transport_models::{
+	AudioData,
+	ClientToServerMessage,
+	FinalizeStreaming,
+	InitializeStreaming,
+	ServerToClientMessage,
+	StatusConnectionOpen,
+};
 
 fn main() {
-    let test_file_path = std::env::args()
-        .nth(1)
-        .expect("first argument should be the path to the WAV file to test");
+	let test_file_path = std::env::args()
+		.nth(1)
+		.expect("first argument should be the path to the WAV file to test");
 
-    let reader = hound::WavReader::open(test_file_path).expect("failed to open WAV file");
-    // sample rate must be 16000 Hz
-    // channels must be 1
-    // sample format must be 16-bit signed integer
-    let spec = reader.spec();
-    assert_eq!(spec.sample_rate, 16000);
-    assert_eq!(spec.channels, 1);
-    assert_eq!(spec.sample_format, hound::SampleFormat::Int);
-    assert_eq!(spec.bits_per_sample, 16);
+	let reader = hound::WavReader::open(test_file_path).expect("failed to open WAV file");
+	// sample rate must be 16000 Hz
+	// channels must be 1
+	// sample format must be 16-bit signed integer
+	let spec = reader.spec();
+	assert_eq!(spec.sample_rate, 16000);
+	assert_eq!(spec.channels, 1);
+	assert_eq!(spec.sample_format, hound::SampleFormat::Int);
+	assert_eq!(spec.bits_per_sample, 16);
 
-    // checks passed? good
-    // now we can read the WAV file's data
-    let data = reader
-        .into_samples::<i16>()
-        .map(|x| x.expect("invalid sample"))
-        .collect::<Vec<_>>();
+	// checks passed? good
+	// now we can read the WAV file's data
+	let data = reader
+		.into_samples::<i16>()
+		.map(|x| x.expect("invalid sample"))
+		.collect::<Vec<_>>();
 
-    // open a UDS socket from the client to the server
-    // the socket is located at `/tmp/stts.sock`
-    let mut socket = TcpStream::connect((IpAddr::from([127, 0, 0, 1]), 7269))
-        .expect("failed to connect to server");
+	// open a TCP socket from the client to the server
+	let mut socket = TcpStream::connect((IpAddr::from([127, 0, 0, 1]), 7270))
+		.expect("failed to connect to server");
 
-    // handshake with the server
-    println!("sending handshake");
-    socket.write_u8(0x00).expect("failed to write to socket");
-    socket
-        .write_u8(false as u8)
-        .expect("failed to write to socket");
-    write_string(&mut socket, "en").expect("failed to write to socket");
-    socket.flush().expect("failed to flush socket");
-    // wait for the server to acknowledge the handshake
-    assert_eq!(socket.read_u8().expect("failed to read from socket"), 0x00);
-    println!("handshake complete");
+	// wait for the server to send a StatusConnectionOpen message
+	println!("waiting for initialization");
+	let message = read_socket_message(&mut socket);
+	match message {
+		ServerToClientMessage::StatusConnectionOpen(StatusConnectionOpen {
+			max_utilization,
+			can_overload,
+		}) => {
+			println!("max utilization: {}", max_utilization);
+			println!("can overload: {}", can_overload);
+		}
+		_ => panic!("expected StatusConnectionOpen, got {:?}", message),
+	};
+	println!("server initialized");
 
-    // send the audio data to the server in chunks of 3,840 bytes (20ms, or 240 samples)
-    for chunk in data.chunks(240) {
-        println!("sending chunk");
-        // packet type: 0x01
-        socket.write_u8(0x01).expect("failed to write to socket");
-        // field 1: number of bytes in the chunk: u32
-        let bytes = chunk.len() * std::mem::size_of::<i16>();
-        println!("writing {} bytes", bytes);
-        socket
-            .write_u32::<NetworkEndian>(bytes as u32)
-            .expect("failed to write to socket");
-        // field 2: chunk data: i16
-        let sample_count = chunk.len();
-        println!("writing {} samples", sample_count);
-        let mut dst = vec![0; bytes];
-        NetworkEndian::write_i16_into(chunk, &mut dst);
-        socket.write_all(&dst).expect("failed to write to socket");
-        socket.flush().expect("failed to flush socket");
-        println!("chunk sent");
-    }
+	let id = uuid::Uuid::new_v4();
 
-    // finalize streaming
-    println!("sending finalize streaming");
-    socket.write_u8(0x02).expect("failed to write to socket");
-    socket.flush().expect("failed to flush socket");
-    let st = Instant::now();
-    println!("finalize streaming sent");
+	// notify the server we want to start streaming
+	println!("sending initialization message");
+	let message = ClientToServerMessage::InitializeStreaming(InitializeStreaming {
+		verbose: false,
+		language: "en".to_string(),
+		id,
+	});
+	write_socket_message(&mut socket, &message);
+	println!("initialization message sent");
+	// wait for the server to send an InitializationComplete message
+	println!("waiting for initialization complete");
+	let message = read_socket_message(&mut socket);
+	match message {
+		ServerToClientMessage::InitializationComplete(_) => {}
+		_ => panic!("expected InitializationComplete, got {:?}", message),
+	};
+	println!("initialization complete");
 
-    // wait for the server to acknowledge the finalize streaming message
-    assert_eq!(socket.read_u8().expect("failed to read from socket"), 0x02);
-    let et = Instant::now();
-    // read a string from the server
-    let s = read_string(&mut socket).expect("failed to read from socket");
-    println!("{}", s);
-    println!("{}ns", (et - st).as_nanos());
+	// send the audio data to the server in chunks of 3,840 bytes (20ms, or 240 samples)
+	for chunk in data.chunks(240) {
+		println!("sending chunk");
+		let message = ClientToServerMessage::AudioData(AudioData {
+			data: chunk.to_vec(),
+			id,
+		});
+		write_socket_message(&mut socket, &message);
+		println!("chunk sent");
+	}
+
+	// send the finalize message
+	println!("sending finalize message");
+	let message = ClientToServerMessage::FinalizeStreaming(FinalizeStreaming { id });
+	write_socket_message(&mut socket, &message);
+	let st = Instant::now();
+	println!("finalize message sent");
+
+	// wait for the server to send a SttResult message
+	println!("waiting for result");
+	let message = read_socket_message(&mut socket);
+	match message {
+		ServerToClientMessage::SttResult(result) => {
+			println!("result: {}", result.result);
+			println!("time: {:?}", st.elapsed());
+		}
+		_ => panic!("expected SttResult, got {:?}", message),
+	};
+	println!("result received");
 }
 
-fn read_string(stream: &mut TcpStream) -> io::Result<String> {
-    // strings are encoded as a u64 length followed by the string bytes
-    let len = stream.read_u64::<NetworkEndian>()?;
-    let mut buf = vec![0u8; len as usize];
-    stream.read_exact(&mut buf)?;
-    Ok(String::from_utf8_lossy(&buf).to_string())
+fn read_socket_message(socket: &mut TcpStream) -> ServerToClientMessage {
+	// read the magic bytes
+	let mut magic = [0; 4];
+	socket
+		.read_exact(&mut magic)
+		.expect("failed to read from socket");
+	assert_eq!(magic, scripty_common::MAGIC_BYTES);
+
+	// read the data length
+	let mut data_length_bytes = [0; 8];
+	socket
+		.read_exact(&mut data_length_bytes)
+		.expect("failed to read from socket");
+	let data_length = NetworkEndian::read_u64(&data_length_bytes);
+
+	// read the data
+	let mut data = vec![0; data_length as usize];
+	socket
+		.read_exact(&mut data)
+		.expect("failed to read from socket");
+
+	// deserialize the data
+	rmp_serde::from_slice(&data).expect("failed to deserialize data")
 }
 
-fn write_string(stream: &mut TcpStream, string: &str) -> io::Result<()> {
-    // strings are encoded as a u64 length followed by the string bytes
-    // cache the bytes to prevent a second call to .as_bytes()
-    let bytes = string.as_bytes();
-    let len = bytes.len() as u64;
-    stream.write_u64::<NetworkEndian>(len as u64)?;
-    stream.write_all(bytes)?;
-    Ok(())
+fn write_socket_message(socket: &mut TcpStream, message: &ClientToServerMessage) {
+	// serialize the message
+	let mut data = Vec::new();
+	rmp_serde::encode::write(&mut data, message).expect("failed to serialize message");
+
+	// write the magic bytes
+	socket
+		.write_all(&scripty_common::MAGIC_BYTES)
+		.expect("failed to write to socket");
+
+	// write the data length
+	socket
+		.write_u64::<NetworkEndian>(data.len() as u64)
+		.expect("failed to write to socket");
+
+	// write the data
+	socket.write_all(&data).expect("failed to write to socket");
+
+	// flush the socket
+	socket.flush().expect("failed to flush socket");
 }

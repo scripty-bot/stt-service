@@ -8,3 +8,6 @@ edition = "2021"
 [dependencies]
 hound = "3"
 byteorder = "1"
+rmp-serde = "1"
+uuid = { version = "1", features = ["v4"] }
+scripty-common = { git = "https://github.com/scripty-bot/scripty-common", branch = "main" }
