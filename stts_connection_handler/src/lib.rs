@@ -6,6 +6,7 @@ extern crate tracing;
 use std::{
 	fmt::{Debug, Display, Formatter},
 	net::SocketAddr,
+	sync::Arc,
 	time::Duration,
 };
 
@@ -40,9 +41,9 @@ macro_rules! is_recoverable_handler {
 			Err(e) => {
 				error!("error reading message: {}", e);
 				if e.is_recoverable() {
-					continue;
+					return false;
 				} else {
-					break;
+					return true;
 				}
 			}
 		}
@@ -50,33 +51,41 @@ macro_rules! is_recoverable_handler {
 }
 
 pub struct ConnectionHandler {
-	internal_rx:     OwnedReadHalf,
-	internal_tx:     OwnedWriteHalf,
+	internal_rx:  OwnedReadHalf,
+	internal_tx:  Option<OwnedWriteHalf>,
+	peer_address: SocketAddr,
+
 	last_timeout:    Instant,
-	peer_address:    SocketAddr,
-	stt_streams:     DashMap<Uuid, SttStreamingState>,
+	stt_streams:     Arc<DashMap<Uuid, SttStreamingState>>,
 	shutdown_handle: tokio::sync::broadcast::Receiver<()>,
+
+	client_rx: Option<tokio::sync::mpsc::Receiver<ServerToClientMessage>>,
+	client_tx: tokio::sync::mpsc::Sender<ServerToClientMessage>,
 }
 
 impl ConnectionHandler {
 	pub fn new(
 		internal_stream: TcpStream,
 		peer_address: SocketAddr,
+		stt_streams: Arc<DashMap<Uuid, SttStreamingState>>,
 		shutdown_handle: tokio::sync::broadcast::Receiver<()>,
 	) -> Self {
 		let (internal_rx, internal_tx) = internal_stream.into_split();
+		let (client_tx, client_rx) = tokio::sync::mpsc::channel(64);
 		Self {
 			internal_rx,
-			internal_tx,
+			internal_tx: Some(internal_tx),
 			peer_address,
 			shutdown_handle,
+			client_rx: Some(client_rx),
 			last_timeout: Instant::now(),
-			stt_streams: DashMap::new(),
+			stt_streams,
+			client_tx,
 		}
 	}
 
 	/// Enter the main loop of the connection handler.
-	pub async fn handle(&mut self) {
+	pub async fn handle(mut self) {
 		// write the initial status message
 		let max_utilization = std::env::args()
 			.nth(2)
@@ -91,45 +100,70 @@ impl ConnectionHandler {
 			.unwrap_or(false);
 		info!("can_overload: {}", can_overload);
 
-		if let Err(e) = self
-			.send_message(ServerToClientMessage::StatusConnectionOpen(
+		if let Err(e) = Self::send_message(
+			self.client_tx.clone(),
+			ServerToClientMessage::StatusConnectionOpen(
 				scripty_common::stt_transport_models::StatusConnectionOpen {
 					max_utilization,
 					can_overload,
 				},
-			))
-			.await
+			),
+		)
+		.await
 		{
 			error!("error sending status message: {}", e);
 			// we can try sending an error, but if that fails we should just give up
-			if let Err(e) = self
-				.send_message(ServerToClientMessage::FatalIoError(
+			if let Err(e) = Self::send_message(
+				self.client_tx.clone(),
+				ServerToClientMessage::FatalIoError(
 					scripty_common::stt_transport_models::FatalIoError {
 						error: e.to_string(),
 					},
-				))
-				.await
+				),
+			)
+			.await
 			{
 				error!("error sending fatal error message: {}", e);
 			}
 			return; // don't continue if we can't send the status message
 		}
 
+		tokio::spawn(Self::send_message_loop(
+			self.internal_tx
+				.take()
+				.expect("should only take internal_tx once"),
+			self.client_rx
+				.take()
+				.expect("should only take client_rx once"),
+		));
+
 		loop {
 			debug!("waiting for message");
 			// read a message
-			let msg = if let Some(msg) = is_recoverable_handler!(self.read_message().await) {
+			let msg = match self.read_message().await {
+				Ok(msg) => msg,
+				Err(e) => {
+					error!("error reading message: {}", e);
+					if e.is_recoverable() {
+						continue;
+					} else {
+						break;
+					}
+				}
+			};
+			let msg = if let Some(msg) = msg {
 				msg
 			} else {
 				// timed out, write another status message and update the timeout
-				is_recoverable_handler!(
-					self.send_message(ServerToClientMessage::StatusConnectionData(
+				Self::send_message(
+					self.client_tx.clone(),
+					ServerToClientMessage::StatusConnectionData(
 						scripty_common::stt_transport_models::StatusConnectionData {
 							utilization: get_load() as f64,
-						}
-					))
-					.await
-				);
+						},
+					),
+				)
+				.await;
 				self.last_timeout = Instant::now();
 
 				// check if we should shutdown
@@ -140,93 +174,140 @@ impl ConnectionHandler {
 				}
 			};
 
-			match msg {
-				ClientToServerMessage::InitializeStreaming(InitializeStreaming {
-					verbose,
-					language,
-					id,
-				}) => {
-					// create a new model
-					let stream = SttStreamingState::new(language, verbose);
-					// store the model
-					self.stt_streams.insert(id, stream);
-					// send success
-					is_recoverable_handler!(
-						self.send_message(ServerToClientMessage::InitializationComplete(
-							InitializationComplete { id }
-						))
-						.await
-					);
-				}
-				ClientToServerMessage::AudioData(AudioData { data, id }) => {
-					// fetch the model
-
-					// we have to check this first because we cannot send a message in the None
-					// case due to the borrow checker (&mut self + &self)
-					if !self.stt_streams.contains_key(&id) {
-						warn!("no model loaded for id {}", id);
-						is_recoverable_handler!(
-							self.send_message(ServerToClientMessage::SttError(SttError {
-								id,
-								error: "no model loaded for this id".to_string(),
-							}))
-							.await
-						);
-						continue; // just ignore this message
-					}
-
-					let stream = match self.stt_streams.get(&id) {
-						Some(stream) => stream,
-						None => {
-							unreachable!("already asserted that the key exists, but it doesn't")
-						}
-					};
-					// feed the audio data to the model
-					stream.feed_audio(data).await;
-					// we don't need to send a response
-				}
-				ClientToServerMessage::FinalizeStreaming(FinalizeStreaming { id }) => {
-					let (id, stream) = match self.stt_streams.remove(&id) {
-						Some(stream) => stream,
-						None => {
-							warn!("no model loaded for id {}", id);
-							is_recoverable_handler!(
-								self.send_message(ServerToClientMessage::SttError(SttError {
-									id,
-									error: "no model loaded for this id".to_string(),
-								}))
-								.await
-							);
-							continue; // ignore this message
-						}
-					};
-					let final_result = match stream.finish_stream().await {
-						Ok(result) => ServerToClientMessage::SttResult(SttSuccess { id, result }),
-						Err(e) => ServerToClientMessage::SttError(SttError {
-							id,
-							error: e.to_string(),
-						}),
-					};
-
-					is_recoverable_handler!(self.send_message(final_result).await);
-				}
-				ClientToServerMessage::CloseConnection => break,
-			}
+			tokio::spawn(Self::handle_message(
+				msg,
+				Arc::clone(&self.stt_streams),
+				self.client_tx.clone(),
+			));
 		}
 		info!("closing connection from {}", self.peer_address);
-		// shutdown the connection
-		if let Err(e) = self.internal_tx.shutdown().await {
-			error!(
-				"error shutting down connection from {}: {}",
-				self.peer_address, e
-			);
+	}
+
+	async fn handle_message(
+		msg: ClientToServerMessage,
+		stt_streams: Arc<DashMap<Uuid, SttStreamingState>>,
+		client_tx: tokio::sync::mpsc::Sender<ServerToClientMessage>,
+	) -> bool {
+		match msg {
+			ClientToServerMessage::InitializeStreaming(InitializeStreaming { id }) => {
+				// create a new model
+				let stream = SttStreamingState::new();
+				// store the model
+				stt_streams.insert(id, stream);
+				// send success
+				is_recoverable_handler!(
+					Self::send_message(
+						client_tx,
+						ServerToClientMessage::InitializationComplete(InitializationComplete {
+							id
+						})
+					)
+					.await
+				);
+				false
+			}
+			ClientToServerMessage::AudioData(AudioData { data, id }) => {
+				// fetch the model
+
+				// we have to check this first because we cannot send a message in the None
+				// case due to the borrow checker (&mut self + &self)
+				if !stt_streams.contains_key(&id) {
+					warn!("no model loaded for id {}", id);
+					is_recoverable_handler!(
+						Self::send_message(
+							client_tx,
+							ServerToClientMessage::SttError(SttError {
+								id,
+								error: "no model loaded for this id".to_string(),
+							})
+						)
+						.await
+					);
+					return false; // just ignore this message
+				}
+
+				let stream = match stt_streams.get(&id) {
+					Some(stream) => stream,
+					None => {
+						unreachable!("already asserted that the key exists, but it doesn't")
+					}
+				};
+				// feed the audio data to the model
+				stream.feed_audio(data).await;
+				// we don't need to send a response
+				false
+			}
+			ClientToServerMessage::FinalizeStreaming(FinalizeStreaming {
+				verbose,
+				language,
+				translate,
+				id,
+			}) => {
+				let (id, stream) = match stt_streams.remove(&id) {
+					Some(stream) => stream,
+					None => {
+						warn!("no model loaded for id {}", id);
+						is_recoverable_handler!(
+							Self::send_message(
+								client_tx,
+								ServerToClientMessage::SttError(SttError {
+									id,
+									error: "no model loaded for this id".to_string(),
+								})
+							)
+							.await
+						);
+						return false; // ignore this message
+					}
+				};
+				let final_result = match stream.finish_stream(language, verbose, translate).await {
+					Ok(result) => ServerToClientMessage::SttResult(SttSuccess { id, result }),
+					Err(e) => ServerToClientMessage::SttError(SttError {
+						id,
+						error: e.to_string(),
+					}),
+				};
+
+				is_recoverable_handler!(Self::send_message(client_tx, final_result).await);
+				false
+			}
+			ClientToServerMessage::CloseConnection => true,
 		}
 	}
 
 	async fn send_message(
-		&mut self,
+		client_tx: tokio::sync::mpsc::Sender<ServerToClientMessage>,
 		msg: ServerToClientMessage,
 	) -> Result<(), ConnectionHandlerError> {
+		client_tx.send(msg).await.map_err(|e| {
+			ConnectionHandlerError::Io(io::Error::new(io::ErrorKind::BrokenPipe, e.to_string()))
+		})
+	}
+
+	async fn send_message_loop(
+		mut tx: OwnedWriteHalf,
+		mut rx: tokio::sync::mpsc::Receiver<ServerToClientMessage>,
+	) {
+		while let Some(msg) = rx.recv().await {
+			if let Err(e) = Self::send_message_internal(&mut tx, msg).await {
+				error!("error sending message: {}", e);
+				break;
+			}
+		}
+
+		// if we get here, the receiver was closed
+		debug!("send_message_loop exited");
+		if let Err(e) = tx.shutdown().await {
+			error!("error shutting down socket: {}", e);
+		}
+	}
+
+	async fn send_message_internal(
+		tx: &mut OwnedWriteHalf,
+		msg: ServerToClientMessage,
+	) -> Result<(), ConnectionHandlerError> {
+		debug!("sending message: {:?}", msg);
+
 		// serialize the message with msgpack
 		let mut payload = Vec::new();
 		rmp_serde::encode::write(&mut payload, &msg)?;
@@ -237,13 +318,11 @@ impl ConnectionHandler {
 		byteorder::NetworkEndian::write_u64(&mut buf, payload_size);
 
 		// write the magic bytes
-		self.internal_tx
-			.write_all(&scripty_common::MAGIC_BYTES)
-			.await?;
+		tx.write_all(&scripty_common::MAGIC_BYTES).await?;
 		// write the payload size
-		self.internal_tx.write_all(&buf).await?;
+		tx.write_all(&buf).await?;
 		// write the payload
-		self.internal_tx.write_all(&payload).await?;
+		tx.write_all(&payload).await?;
 		Ok(())
 	}
 
@@ -300,9 +379,9 @@ impl ConnectionHandler {
 		self.internal_rx.read_exact(&mut payload).await?;
 
 		// deserialize the payload with msgpack
-		Ok(Some(rmp_serde::from_slice::<ClientToServerMessage>(
-			&payload,
-		)?))
+		let payload = rmp_serde::from_slice::<ClientToServerMessage>(&payload)?;
+		debug!("received message: {:?}", payload);
+		Ok(Some(payload))
 	}
 }
 

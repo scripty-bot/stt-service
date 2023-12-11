@@ -1,13 +1,24 @@
-use std::net::{IpAddr, SocketAddr};
+use std::{
+	net::{IpAddr, SocketAddr},
+	sync::Arc,
+};
 
+use dashmap::DashMap;
 use tokio::net::TcpStream;
 
 #[macro_use]
 extern crate tracing;
 
-#[tokio::main]
-async fn main() {
-	tracing_subscriber::fmt::init();
+fn main() {
+	tokio::runtime::Builder::new_multi_thread()
+		.enable_all()
+		.build()
+		.unwrap()
+		.block_on(main_inner());
+}
+
+async fn main_inner() {
+	console_subscriber::init();
 
 	info!("loading models");
 	stts_speech_to_text::load_models(
@@ -46,6 +57,8 @@ async fn main() {
 			.expect("failed to send shutdown signal");
 	});
 
+	let stt_streams = Arc::new(DashMap::new());
+
 	info!("polling for connections");
 	loop {
 		// accept connections and spawn a task for each one
@@ -59,10 +72,12 @@ async fn main() {
 			Ok((stream, peer_address)) => {
 				info!("accepted connection from {}", peer_address);
 				let shutdown_rx = shutdown_signal_tx.subscribe();
+				let stt_stream_clone = Arc::clone(&stt_streams);
 				tokio::spawn(async move {
-					let mut handler = stts_connection_handler::ConnectionHandler::new(
+					let handler = stts_connection_handler::ConnectionHandler::new(
 						stream,
 						peer_address,
+						stt_stream_clone,
 						shutdown_rx,
 					);
 					handler.handle().await;

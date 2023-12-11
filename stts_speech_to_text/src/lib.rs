@@ -52,7 +52,7 @@ fn get_new_model() -> Option<WhisperState<'static>> {
 	}
 }
 
-fn create_model_params(language: &str) -> FullParams {
+fn create_model_params(language: &str, translate: bool) -> FullParams {
 	let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 	params.set_n_threads(1);
 	params.set_print_progress(false);
@@ -61,6 +61,7 @@ fn create_model_params(language: &str) -> FullParams {
 	params.set_no_context(true);
 	params.set_suppress_non_speech_tokens(true);
 	params.set_language(Some(language));
+	params.set_translate(translate);
 
 	params
 }
@@ -68,17 +69,19 @@ fn create_model_params(language: &str) -> FullParams {
 /// A wrapper around a Stream that holds the Stream on one thread constantly.
 pub struct SttStreamingState {
 	stream_data: Mutex<Vec<i16>>,
-	language:    String,
-	verbose:     bool,
 	last_access: Mutex<Instant>,
 }
 
+impl Default for SttStreamingState {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl SttStreamingState {
-	pub fn new(language: String, verbose: bool) -> Self {
+	pub fn new() -> Self {
 		Self {
 			stream_data: Mutex::new(Vec::new()),
-			language,
-			verbose,
 			last_access: Mutex::new(Instant::now()),
 		}
 	}
@@ -87,11 +90,14 @@ impl SttStreamingState {
 		self.stream_data.lock().append(&mut audio);
 	}
 
-	pub async fn finish_stream(self) -> Result<String, WhisperError> {
+	pub async fn finish_stream(
+		self,
+		language: String,
+		verbose: bool,
+		translate: bool,
+	) -> Result<String, WhisperError> {
 		let Self {
 			stream_data,
-			language,
-			verbose,
 			last_access: _,
 		} = self;
 
@@ -115,7 +121,7 @@ impl SttStreamingState {
 			let audio_data = convert_integer_to_float_audio(&audio_data);
 
 			// create model params
-			let params = create_model_params(&language);
+			let params = create_model_params(&language, translate);
 
 			// get a model from the pool
 			let mut state = get_new_model().expect("failed to get model from pool");
@@ -123,14 +129,12 @@ impl SttStreamingState {
 			// run the model
 			let res = state.full(params, &audio_data);
 
-			// for all intents and purposes, we are done with the model
-			drop(permit);
-
 			// return the model and the result to the async context
 			(state, res)
 		})
 		.await
 		.expect("model thread panicked (should never happen)");
+		drop(permit);
 
 		// check if the model failed
 		if let Err(e) = res {
