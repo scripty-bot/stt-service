@@ -20,6 +20,7 @@ fn main() {
 }
 
 async fn main_inner() {
+	stts_speech_to_text::install_log_trampoline();
 	console_subscriber::init();
 
 	info!("loading models");

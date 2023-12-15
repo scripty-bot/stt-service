@@ -1151,6 +1151,7 @@ dependencies = [
  "tokio",
  "tracing",
  "whisper-rs",
+ "whisper-rs-sys",
 ]
 
 [[package]]

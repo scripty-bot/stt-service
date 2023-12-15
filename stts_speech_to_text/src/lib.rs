@@ -19,6 +19,40 @@ pub static MODEL: OnceCell<WhisperContext> = OnceCell::new();
 pub static MAX_CONCURRENCY: OnceCell<Arc<Semaphore>> = OnceCell::new();
 pub static WAITING_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+pub fn install_log_trampoline() {
+	#[no_mangle]
+	pub unsafe extern "C" fn whisper_log_trampoline(
+		level: whisper_rs_sys::ggml_log_level,
+		text: *const std::os::raw::c_char,
+		user_data: *mut std::os::raw::c_void,
+	) {
+		let message = match unsafe { std::ffi::CStr::from_ptr(text) }.to_str() {
+			Ok(s) => s,
+			Err(e) => {
+				error!("whisper: log string has invalid UTF-8: {}", e);
+				return;
+			}
+		};
+
+		match level {
+			whisper_rs_sys::ggml_log_level_GGML_LOG_LEVEL_INFO => {
+				info!("whisper: {}", message);
+			}
+			whisper_rs_sys::ggml_log_level_GGML_LOG_LEVEL_WARN => {
+				warn!("whisper: {}", message);
+			}
+			whisper_rs_sys::ggml_log_level_GGML_LOG_LEVEL_ERROR => {
+				error!("whisper: {}", message);
+			}
+			_ => {
+				error!("whisper: unknown log level: {}: {}", level, message);
+			}
+		}
+	}
+
+	unsafe { set_log_callback(Some(whisper_log_trampoline), std::ptr::null_mut()) };
+}
+
 pub fn get_load() -> usize {
 	WAITING_COUNT.load(Ordering::Relaxed)
 }
