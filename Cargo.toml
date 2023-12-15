@@ -25,6 +25,7 @@ tracing = "0.1"
 console-subscriber = "0.2"
 stts_speech_to_text = { path = "stts_speech_to_text" }
 stts_connection_handler = { path = "stts_connection_handler" }
+uuid = { version = "1.6", features = ["v4"] }
 
 [features]
 default = []

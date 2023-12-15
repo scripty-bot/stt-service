@@ -46,7 +46,7 @@ async fn main_inner() {
 	let socket = tokio::net::TcpListener::bind(bind_addr).await.unwrap();
 	info!("opened socket");
 
-	let (shutdown_signal_tx, shutdown_signal_rx) = tokio::sync::broadcast::channel(1);
+	let (shutdown_signal_tx, _shutdown_signal_rx) = tokio::sync::broadcast::channel(1);
 	let inner_shutdown_signal_tx = shutdown_signal_tx.clone();
 	tokio::spawn(async move {
 		tokio::signal::ctrl_c()
