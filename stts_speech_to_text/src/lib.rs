@@ -86,8 +86,9 @@ impl SttStreamingState {
 		}
 	}
 
-	pub async fn feed_audio(&self, mut audio: Vec<i16>) {
+	pub fn feed_audio(&self, mut audio: Vec<i16>) {
 		self.stream_data.lock().append(&mut audio);
+		self.update_last_access();
 	}
 
 	pub async fn finish_stream(

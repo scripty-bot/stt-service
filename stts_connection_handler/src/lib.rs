@@ -1,3 +1,4 @@
+#![feature(let_chains)]
 //! Connection handler for STTS.
 
 #[macro_use]
@@ -155,7 +156,7 @@ impl ConnectionHandler {
 				msg
 			} else {
 				// timed out, write another status message and update the timeout
-				Self::send_message(
+				if let Err(e) = Self::send_message(
 					self.client_tx.clone(),
 					ServerToClientMessage::StatusConnectionData(
 						scripty_common::stt_transport_models::StatusConnectionData {
@@ -163,8 +164,10 @@ impl ConnectionHandler {
 						},
 					),
 				)
-				.await;
-				self.last_timeout = Instant::now();
+				.await && !e.is_recoverable()
+				{
+					break;
+				}
 
 				// check if we should shutdown
 				if self.shutdown_handle.try_recv().is_ok() {
@@ -334,6 +337,7 @@ impl ConnectionHandler {
 			}
 			Err(_) => {
 				// if we timed out, return Ok(None)
+				self.last_timeout = Instant::now();
 				return Ok(None);
 			}
 		};
