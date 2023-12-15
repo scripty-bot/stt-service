@@ -168,7 +168,13 @@ impl SttStreamingState {
 			(state, res)
 		})
 		.await
-		.expect("model thread panicked (should never happen)");
+		.map_err(|e| {
+			error!("failed to spawn blocking task: {:?}", e);
+			// TODO: better error
+			//  we hijacked this error,
+			//  as it's impossible to get in this code path
+			WhisperError::InvalidMelBands
+		})?;
 		drop(permit);
 
 		// check if the model failed
