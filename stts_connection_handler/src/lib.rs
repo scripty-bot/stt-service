@@ -207,33 +207,8 @@ impl ConnectionHandler {
 				false
 			}
 			ClientToServerMessage::AudioData(AudioData { data, id }) => {
-				// fetch the model
-
-				// we have to check this first because we cannot send a message in the None
-				// case due to the borrow checker (&mut self + &self)
-				if !stt_streams.contains_key(&id) {
-					warn!("no model loaded for id {}", id);
-					is_recoverable_handler!(
-						Self::send_message(
-							client_tx,
-							ServerToClientMessage::SttError(SttError {
-								id,
-								error: "no model loaded for this id".to_string(),
-							})
-						)
-						.await
-					);
-					return false; // just ignore this message
-				}
-
-				let stream = match stt_streams.get(&id) {
-					Some(stream) => stream,
-					None => {
-						unreachable!("already asserted that the key exists, but it doesn't")
-					}
-				};
 				// feed the audio data to the model
-				stream.feed_audio(data).await;
+				stt_streams.entry(id).or_default().feed_audio(data);
 				// we don't need to send a response
 				false
 			}
