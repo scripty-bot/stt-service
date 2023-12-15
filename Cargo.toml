@@ -19,13 +19,16 @@ exclude = [
 ]
 
 [dependencies]
-tokio = { version = "1", features = ["full", "tracing"] }
+url = "2"
 dashmap = "5"
-tracing = "0.1"
-console-subscriber = "0.2"
-stts_speech_to_text = { path = "stts_speech_to_text" }
-stts_connection_handler = { path = "stts_connection_handler" }
+tracing = { version = "0.1", features = ["log"] }
+humantime = "2"
 uuid = { version = "1.6", features = ["v4"] }
+tokio = { version = "1", features = ["full"] }
+stts_speech_to_text = { path = "stts_speech_to_text" }
+fern = { version = "0.6", features = ["colored"] }
+stts_connection_handler = { path = "stts_connection_handler" }
+fenrir-rs = { git = "https://github.com/tazz4843/fenrir-rs", branch = "json-logs", features = ["reqwest-async", "json-log-fmt"] }
 
 [features]
 default = []

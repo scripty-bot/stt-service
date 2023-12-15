@@ -1,11 +1,19 @@
 use std::{
+	fs::OpenOptions,
 	net::{IpAddr, SocketAddr},
 	sync::Arc,
+	time::SystemTime,
 };
 
 use dashmap::DashMap;
+use fenrir_rs::{NetworkingBackend, SerializationFormat};
+use fern::{
+	colors::{Color, ColoredLevelConfig},
+	Dispatch,
+};
 use stts_speech_to_text::SttStreamingState;
 use tokio::net::TcpStream;
+use url::Url;
 use uuid::Uuid;
 
 #[macro_use]
@@ -19,9 +27,118 @@ fn main() {
 		.block_on(main_inner());
 }
 
+fn init_logging() {
+	// configure colors for the whole line
+	let colors_line = ColoredLevelConfig::new()
+		.error(Color::Red)
+		.warn(Color::Yellow)
+		// we actually don't need to specify the color for debug and info, they are white by default
+		.info(Color::White)
+		.debug(Color::White)
+		// depending on the terminals color scheme, this is the same as the background color
+		.trace(Color::BrightBlack);
+
+	// configure colors for the name of the level.
+	// since almost all of them are the same as the color for the whole line, we
+	// just clone `colors_line` and overwrite our changes
+	let colors_level = colors_line.info(Color::Green);
+
+	let mut builder = fenrir_rs::Fenrir::builder()
+		.endpoint(
+			Url::parse(&std::env::var("LOKI_TARGET").expect("no loki URL set"))
+				.expect("invalid loki url"),
+		)
+		.network(NetworkingBackend::Reqwest)
+		.format(SerializationFormat::Json)
+		.include_level()
+		.tag("service", "stt-service")
+		.tag(
+			"env",
+			if cfg!(debug_assertions) {
+				"dev"
+			} else {
+				"prod"
+			},
+		);
+	let fenrir = builder.build();
+
+	Dispatch::new()
+		.chain(
+			Dispatch::new()
+				// configure this logger instance to make a fancy, colorful output
+				.format(move |out, message, record| {
+					out.finish(format_args!(
+						"{color_line}[{date} {level} {target} {color_line}] {message}\x1B[0m",
+						color_line = format_args!(
+							"\x1B[{}m",
+							colors_line.get_color(&record.level()).to_fg_str()
+						),
+						date = humantime::format_rfc3339(SystemTime::now()),
+						target = record.target(),
+						level = colors_level.color(record.level()),
+						message = message,
+					));
+				})
+				// just log messages with INFO or higher log level
+				.level(tracing::log::LevelFilter::Info)
+				// completely ignore ureq logs
+				.level_for("ureq", tracing::log::LevelFilter::Off)
+				// boost fenrir_rs logs to TRACE
+				.level_for("fenrir_rs", tracing::log::LevelFilter::Trace)
+				// quieten tracing spans
+				.level_for("tracing::span", tracing::log::LevelFilter::Off)
+				// print this setup of log messages to the console
+				.chain(std::io::stdout()),
+		)
+		.chain(
+			Dispatch::new()
+				// output a raw message
+				.format(|out, message, _record| out.finish(format_args!("{}", message)))
+				// log everything
+				.level(tracing::log::LevelFilter::Trace)
+				// send this setup of log messages to Loki
+				.chain(Box::new(fenrir) as Box<dyn tracing::log::Log>),
+		)
+		.chain(
+			Dispatch::new()
+				// configure this logger instance to make a slightly more informative output, but without colors
+				.format(move |out, message, record| {
+					out.finish(format_args!(
+						"[{date} {level} {target}] {message}",
+						date = humantime::format_rfc3339(SystemTime::now()),
+						target = record.target(),
+						level = record.level(),
+						message = message,
+					))
+				})
+				// log most things
+				.level(tracing::log::LevelFilter::Debug)
+				// again, ignore tracing spans
+				.level_for("tracing::span", tracing::log::LevelFilter::Off)
+				// quieten ureq logs
+				.level_for("ureq", tracing::log::LevelFilter::Warn)
+				// quieten hyper
+				.level_for("hyper", tracing::log::LevelFilter::Warn)
+				// quieten h2
+				.level_for("h2", tracing::log::LevelFilter::Warn)
+				// quieten rustls
+				.level_for("rustls", tracing::log::LevelFilter::Warn)
+				// send this setup of log messages to a file named `output.log`
+				.chain(
+					OpenOptions::new()
+						.write(true)
+						.create(true)
+						.open("output.log")
+						.expect("failed to open output.log"),
+				),
+		)
+		.apply()
+		.expect("failed to init logger");
+}
+
 async fn main_inner() {
 	stts_speech_to_text::install_log_trampoline();
-	console_subscriber::init();
+	init_logging();
 
 	info!("loading models");
 	stts_speech_to_text::load_models(
