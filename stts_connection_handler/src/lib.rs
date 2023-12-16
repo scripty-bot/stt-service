@@ -211,7 +211,20 @@ impl ConnectionHandler {
 			}
 			ClientToServerMessage::AudioData(AudioData { data, id }) => {
 				// feed the audio data to the model
-				stt_streams.entry(id).or_default().feed_audio(data);
+				let stream = {
+					match stt_streams.get(&id) {
+						Some(stream) => stream,
+						None => {
+							// insert a new model if it doesn't exist
+							let stream = SttStreamingState::new();
+							stt_streams.insert(id, stream);
+							stt_streams
+								.get(&id)
+								.expect("should have inserted a new model")
+						}
+					}
+				};
+				stream.feed_audio(data);
 				// we don't need to send a response
 				false
 			}
@@ -221,21 +234,23 @@ impl ConnectionHandler {
 				translate,
 				id,
 			}) => {
-				let (id, stream) = match stt_streams.remove(&id) {
-					Some(stream) => stream,
-					None => {
-						warn!("no model loaded for id {}", id);
-						is_recoverable_handler!(
-							Self::send_message(
-								client_tx,
-								ServerToClientMessage::SttError(SttError {
-									id,
-									error: "no model loaded for this id".to_string(),
-								})
-							)
-							.await
-						);
-						return false; // ignore this message
+				let (id, stream) = {
+					match stt_streams.remove(&id) {
+						Some(stream) => stream,
+						None => {
+							warn!("no model loaded for id {}", id);
+							is_recoverable_handler!(
+								Self::send_message(
+									client_tx,
+									ServerToClientMessage::SttError(SttError {
+										id,
+										error: "no model loaded for this id".to_string(),
+									})
+								)
+								.await
+							);
+							return false; // ignore this message
+						}
 					}
 				};
 				let final_result = match stream.finish_stream(language, verbose, translate).await {
