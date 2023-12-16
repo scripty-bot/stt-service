@@ -38,7 +38,7 @@ fn main() {
 		.collect::<Vec<_>>();
 
 	// open a TCP socket from the client to the server
-	let mut socket = TcpStream::connect((IpAddr::from([127, 0, 0, 1]), 7270))
+	let mut socket = TcpStream::connect((IpAddr::from([127, 0, 0, 1]), 7269))
 		.expect("failed to connect to server");
 
 	// wait for the server to send a StatusConnectionOpen message
@@ -60,11 +60,7 @@ fn main() {
 
 	// notify the server we want to start streaming
 	println!("sending initialization message");
-	let message = ClientToServerMessage::InitializeStreaming(InitializeStreaming {
-		verbose: false,
-		language: "en".to_string(),
-		id,
-	});
+	let message = ClientToServerMessage::InitializeStreaming(InitializeStreaming { id });
 	write_socket_message(&mut socket, &message);
 	println!("initialization message sent");
 	// wait for the server to send an InitializationComplete message
@@ -89,21 +85,29 @@ fn main() {
 
 	// send the finalize message
 	println!("sending finalize message");
-	let message = ClientToServerMessage::FinalizeStreaming(FinalizeStreaming { id });
+	let message = ClientToServerMessage::FinalizeStreaming(FinalizeStreaming {
+		translate: false,
+		verbose: false,
+		language: "en".to_string(),
+		id,
+	});
 	write_socket_message(&mut socket, &message);
 	let st = Instant::now();
 	println!("finalize message sent");
 
 	// wait for the server to send a SttResult message
 	println!("waiting for result");
-	let message = read_socket_message(&mut socket);
-	match message {
-		ServerToClientMessage::SttResult(result) => {
-			println!("result: {}", result.result);
-			println!("time: {:?}", st.elapsed());
-		}
-		_ => panic!("expected SttResult, got {:?}", message),
-	};
+	loop {
+		let message = read_socket_message(&mut socket);
+		match message {
+			ServerToClientMessage::SttResult(result) => {
+				println!("result: {}", result.result);
+				println!("time: {:?}", st.elapsed());
+				break;
+			}
+			_ => println!("expected SttResult, got {:?}", message),
+		};
+	}
 	println!("result received");
 }
 
