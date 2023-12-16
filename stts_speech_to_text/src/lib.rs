@@ -87,7 +87,10 @@ fn get_new_model() -> Option<WhisperState<'static>> {
 }
 
 fn create_model_params(language: &str, translate: bool) -> FullParams {
-	let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+	let mut params = FullParams::new(SamplingStrategy::BeamSearch {
+		beam_size: 5,
+		patience:  -1.0,
+	});
 	params.set_n_threads(1);
 	params.set_print_progress(false);
 	params.set_print_realtime(false);
