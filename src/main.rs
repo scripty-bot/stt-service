@@ -22,6 +22,7 @@ extern crate tracing;
 fn main() {
 	tokio::runtime::Builder::new_multi_thread()
 		.enable_all()
+		.worker_threads(4)
 		.build()
 		.unwrap()
 		.block_on(main_inner());
@@ -178,24 +179,6 @@ async fn main_inner() {
 	});
 
 	let stt_streams = Arc::new(DashMap::<Uuid, SttStreamingState>::new());
-
-	// every 15 minutes, remove all streams that haven't been used in the last 15 minutes
-	let stt_streams_clone = Arc::clone(&stt_streams);
-	tokio::spawn(async move {
-		loop {
-			tokio::time::sleep(tokio::time::Duration::from_secs(60 * 15)).await;
-			let to_remove = stt_streams_clone.iter().filter_map(|x| {
-				if x.value().get_last_access().elapsed().as_nanos() > (60 * 15) * 1_000_000_000 {
-					Some(*x.key())
-				} else {
-					None
-				}
-			});
-			for key in to_remove {
-				stt_streams_clone.remove(&key);
-			}
-		}
-	});
 
 	info!("polling for connections");
 	loop {
