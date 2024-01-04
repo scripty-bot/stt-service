@@ -24,7 +24,7 @@ pub fn install_log_trampoline() {
 	pub unsafe extern "C" fn whisper_log_trampoline(
 		level: whisper_rs_sys::ggml_log_level,
 		text: *const std::os::raw::c_char,
-		user_data: *mut std::os::raw::c_void,
+		_: *mut std::os::raw::c_void,
 	) {
 		let message = match unsafe { std::ffi::CStr::from_ptr(text) }.to_str() {
 			Ok(s) => s,
