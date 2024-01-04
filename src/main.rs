@@ -44,7 +44,7 @@ fn init_logging() {
 	// just clone `colors_line` and overwrite our changes
 	let colors_level = colors_line.info(Color::Green);
 
-	let mut builder = fenrir_rs::Fenrir::builder()
+	let builder = fenrir_rs::Fenrir::builder()
 		.endpoint(
 			Url::parse(&std::env::var("LOKI_TARGET").expect("no loki URL set"))
 				.expect("invalid loki url"),
