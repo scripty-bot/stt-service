@@ -23,7 +23,7 @@ use scripty_common::stt_transport_models::{
 	SttError,
 	SttSuccess,
 };
-use stts_speech_to_text::{get_load, SttStreamingState};
+use stts_speech_to_text::{get_load, SttStreamingState, WhisperError};
 use tokio::{
 	io,
 	io::{AsyncReadExt, AsyncWriteExt},
@@ -255,6 +255,10 @@ impl ConnectionHandler {
 				};
 				let final_result = match stream.finish_stream(language, verbose, translate).await {
 					Ok(result) => ServerToClientMessage::SttResult(SttSuccess { id, result }),
+					Err(WhisperError::NoSamples) => ServerToClientMessage::SttResult(SttSuccess {
+						id,
+						result: "".to_string(),
+					}),
 					Err(e) => ServerToClientMessage::SttError(SttError {
 						id,
 						error: e.to_string(),

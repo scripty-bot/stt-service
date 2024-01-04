@@ -142,6 +142,10 @@ impl SttStreamingState {
 		// we own the stream data now, so we can drop the lock
 		let audio_data = stream_data.into_inner();
 
+		if audio_data.is_empty() {
+			return Ok(String::new());
+		}
+
 		WAITING_COUNT.fetch_add(1, Ordering::Relaxed);
 		let permit = MAX_CONCURRENCY
 			.get()
