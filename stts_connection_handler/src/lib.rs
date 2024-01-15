@@ -378,7 +378,6 @@ impl ConnectionHandler {
 
 		// deserialize the payload with msgpack
 		let payload = rmp_serde::from_slice::<ClientToServerMessage>(&payload)?;
-		debug!("received message: {:?}", payload);
 		Ok(Some(payload))
 	}
 }
