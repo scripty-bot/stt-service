@@ -49,6 +49,7 @@ fn init_logging() {
 			Url::parse(&std::env::var("LOKI_TARGET").expect("no loki URL set"))
 				.expect("invalid loki url"),
 		)
+		.flush_threshold(1_000_000) // prevent overloading loki with too many open connections
 		.network(NetworkingBackend::Reqwest)
 		.format(SerializationFormat::Json)
 		.include_level()
