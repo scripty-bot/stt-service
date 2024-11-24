@@ -61,7 +61,9 @@ pub fn load_models(model_path: &str, instances: usize) {
 	info!("attempting to load model");
 	let model = WhisperContext::new_with_params(model_path, WhisperContextParameters::new())
 		.expect("failed to load model");
-	MODEL.set(model).expect("failed to set models");
+	MODEL
+		.set(model)
+		.unwrap_or_else(|_| panic!("already set model: double call is invalid"));
 	info!("loaded model");
 
 	info!("max concurrency: {}", instances);
@@ -70,7 +72,7 @@ pub fn load_models(model_path: &str, instances: usize) {
 		.expect("failed to set max concurrency");
 }
 
-fn get_new_model() -> Option<WhisperState<'static>> {
+fn get_new_model() -> Option<WhisperState> {
 	// if we got a model, return it
 	// on error, log it and return None
 	match MODEL.get().map(|ctx| ctx.create_state()) {
@@ -142,7 +144,14 @@ impl SttStreamingState {
 		// we own the stream data now, so we can drop the lock
 		let audio_data = stream_data.into_inner();
 
-		if audio_data.is_empty() {
+		let all_zeros = audio_data.iter().all(|v| v == &0);
+		let is_empty = audio_data.is_empty();
+		if is_empty || all_zeros {
+			debug!(
+				"returning empty string as is_empty || all_zeros is true (is_empty: {} all_zeros: \
+				 {})",
+				is_empty, all_zeros
+			);
 			return Ok(String::new());
 		}
 
@@ -160,7 +169,9 @@ impl SttStreamingState {
 		let (state, res) = tokio::task::spawn_blocking(move || {
 			// process to mono 16KHz f32
 			// the input is mono 16KHz i16
-			let audio_data = convert_integer_to_float_audio(&audio_data);
+			let mut converted_audio_data = vec![0.0; audio_data.len()];
+			convert_integer_to_float_audio(&audio_data, &mut converted_audio_data)
+				.expect("failed to convert from integer to float");
 
 			// create model params
 			let params = create_model_params(&language, translate);
@@ -169,7 +180,7 @@ impl SttStreamingState {
 			let mut state = get_new_model().expect("failed to get model from pool");
 
 			// run the model
-			let res = state.full(params, &audio_data);
+			let res = state.full(params, &converted_audio_data);
 
 			// return the model and the result to the async context
 			(state, res)
