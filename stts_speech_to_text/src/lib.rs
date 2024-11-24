@@ -174,7 +174,8 @@ impl SttStreamingState {
 			convert_integer_to_float_audio(&audio_data, &mut converted_audio_data)
 				.expect("failed to convert from integer to float");
 
-			const MINIMUM_NUMBER_OF_SAMPLES: usize = 16000;
+			// 1,010 ms of audio minimum
+			const MINIMUM_NUMBER_OF_SAMPLES: usize = 16160;
 			let audio_len = converted_audio_data.len();
 			if audio_len < MINIMUM_NUMBER_OF_SAMPLES {
 				// less than MINIMUM_NUMBER_OF_SAMPLES (ie less than one second of audio)
