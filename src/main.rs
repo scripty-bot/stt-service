@@ -130,6 +130,7 @@ fn init_logging() {
 					OpenOptions::new()
 						.write(true)
 						.create(true)
+						.truncate(true)
 						.open("output.log")
 						.expect("failed to open output.log"),
 				),
