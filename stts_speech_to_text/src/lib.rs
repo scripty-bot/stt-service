@@ -174,6 +174,27 @@ impl SttStreamingState {
 			convert_integer_to_float_audio(&audio_data, &mut converted_audio_data)
 				.expect("failed to convert from integer to float");
 
+			const MINIMUM_NUMBER_OF_SAMPLES: usize = 16000;
+			let audio_len = converted_audio_data.len();
+			if audio_len < MINIMUM_NUMBER_OF_SAMPLES {
+				// less than MINIMUM_NUMBER_OF_SAMPLES (ie less than one second of audio)
+				// pad to one second by appending zeros
+				let required_padding = MINIMUM_NUMBER_OF_SAMPLES - audio_len;
+				debug!(
+					"audio sample is less than {} samples ({}), padding with {} samples",
+					MINIMUM_NUMBER_OF_SAMPLES, audio_len, required_padding
+				);
+				converted_audio_data.reserve(required_padding);
+				let pad = vec![0.0; required_padding];
+				converted_audio_data.extend(pad.into_iter());
+				assert_eq!(
+					converted_audio_data.len(),
+					MINIMUM_NUMBER_OF_SAMPLES,
+					"should be exactly {} elements in audio data",
+					MINIMUM_NUMBER_OF_SAMPLES
+				);
+			}
+
 			// create model params
 			let params = create_model_params(&language, translate);
 
