@@ -32,7 +32,8 @@ pub fn install_log_trampoline() {
 				error!("whisper: log string has invalid UTF-8: {}", e);
 				return;
 			}
-		};
+		}
+		.trim();
 
 		match level {
 			whisper_rs_sys::ggml_log_level_GGML_LOG_LEVEL_INFO => {
