@@ -3,7 +3,7 @@ use std::{
 	fs::OpenOptions,
 	io::ErrorKind,
 	net::{IpAddr, Ipv4Addr, SocketAddr},
-	os::fd::{FromRawFd, RawFd},
+	os::fd::{BorrowedFd, FromRawFd, RawFd},
 	str::FromStr,
 	sync::Arc,
 	time::{Duration, SystemTime},
@@ -15,7 +15,7 @@ use fern::{
 	colors::{Color, ColoredLevelConfig},
 	Dispatch,
 };
-use nix::sys::stat::SFlag;
+use nix::sys::{socket::SockType, stat::SFlag};
 use sd_notify::NotifyState;
 use stts_speech_to_text::SttStreamingState;
 use tokio::{
@@ -305,7 +305,8 @@ async fn get_socket() -> TcpListener {
 				if !verify_fd_is_socket(fd) {
 					panic!("fd {} is not a socket, giving up", fd);
 				}
-				// SAFETY: we must trust that systemd has given us a valid TCP socket
+				// SAFETY: we have verified that fd is a valid TCP socket, and we hold control
+				// over the sole instance of it
 				let listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
 
 				listener
@@ -331,8 +332,24 @@ async fn get_socket() -> TcpListener {
 /// Return true if `fd` is a socket.
 fn verify_fd_is_socket(fd: RawFd) -> bool {
 	let file_stat = nix::sys::stat::fstat(fd).expect("failed to check type of file descriptor");
-	(SFlag::from_bits(file_stat.st_mode).expect("st_mode should be a valid flag") & SFlag::S_IFMT)
-		== SFlag::S_IFSOCK
+	let is_socket = (SFlag::from_bits(file_stat.st_mode).expect("st_mode should be a valid flag")
+		& SFlag::S_IFMT)
+		== SFlag::S_IFSOCK;
+	if !is_socket {
+		return false;
+	}
+
+	let sock_type = {
+		assert_ne!(fd, -1);
+		// SAFETY: the file descriptor referenced by fd is guaranteed to be open
+		// for the entirety of borrowed_fd's lifetime
+		// and we asserted above that fd is not -1
+		let borrowed_fd = unsafe { BorrowedFd::borrow_raw(fd) };
+
+		nix::sys::socket::getsockopt(&borrowed_fd, nix::sys::socket::sockopt::SockType)
+			.expect("failed to fetch type of socket")
+	};
+	sock_type == SockType::Stream
 }
 
 async fn get_socket_from_env() -> TcpListener {
