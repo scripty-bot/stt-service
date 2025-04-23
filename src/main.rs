@@ -1,8 +1,12 @@
 use std::{
+	cmp::Ordering,
 	fs::OpenOptions,
-	net::{IpAddr, SocketAddr},
+	io::ErrorKind,
+	net::{IpAddr, Ipv4Addr, SocketAddr},
+	os::fd::{FromRawFd, RawFd},
+	str::FromStr,
 	sync::Arc,
-	time::SystemTime,
+	time::{Duration, SystemTime},
 };
 
 use dashmap::DashMap;
@@ -11,8 +15,13 @@ use fern::{
 	colors::{Color, ColoredLevelConfig},
 	Dispatch,
 };
+use nix::sys::stat::SFlag;
+use sd_notify::NotifyState;
 use stts_speech_to_text::SttStreamingState;
-use tokio::net::TcpStream;
+use tokio::{
+	net::{TcpListener, TcpStream},
+	time::Instant,
+};
 use url::Url;
 use uuid::Uuid;
 
@@ -130,6 +139,7 @@ fn init_logging() {
 					OpenOptions::new()
 						.write(true)
 						.create(true)
+						.truncate(true)
 						.open("output.log")
 						.expect("failed to open output.log"),
 				),
@@ -155,18 +165,7 @@ async fn main_inner() {
 	);
 	info!("loaded models");
 
-	let bind_addr = (
-		IpAddr::from([0, 0, 0, 0]),
-		match std::env::var("PORT") {
-			Ok(port) => port.parse().expect("PORT should be a number"),
-			Err(_) => 7269,
-		},
-	);
-	info!("listening on {}:{}", bind_addr.0, bind_addr.1);
-
-	info!("opening socket");
-	let socket = tokio::net::TcpListener::bind(bind_addr).await.unwrap();
-	info!("opened socket");
+	let socket = get_socket().await;
 
 	let (shutdown_signal_tx, _shutdown_signal_rx) = tokio::sync::broadcast::channel(1);
 	let inner_shutdown_signal_tx = shutdown_signal_tx.clone();
@@ -179,7 +178,17 @@ async fn main_inner() {
 			.expect("failed to send shutdown signal");
 	});
 
+	let watchdog_pet_interval =
+		watchdog_required().map_or_else(|| Duration::from_secs(u64::MAX), |interval| interval / 2);
+	let get_next_watchdog_pet_instant = || Instant::now() + watchdog_pet_interval;
+
 	let stt_streams = Arc::new(DashMap::<Uuid, SttStreamingState>::new());
+	let mut next_watchdog_pet = get_next_watchdog_pet_instant();
+
+	if running_under_system_manager() {
+		sd_notify::notify(false, &[NotifyState::Ready])
+			.expect("failed to notify system manager of ready");
+	}
 
 	info!("polling for connections");
 	loop {
@@ -188,6 +197,11 @@ async fn main_inner() {
 		let conn: tokio::io::Result<(TcpStream, SocketAddr)> = tokio::select! {
 			s = socket.accept() => s,
 			_ = tokio::signal::ctrl_c() => break,
+			_ = tokio::time::sleep_until(next_watchdog_pet) => {
+				sd_notify::notify(false, &[NotifyState::Watchdog]).expect("failed to notify watchdog");
+				next_watchdog_pet = get_next_watchdog_pet_instant();
+				continue;
+			}
 		};
 		debug!("accepting connection");
 		match conn {
@@ -205,7 +219,139 @@ async fn main_inner() {
 					handler.handle().await;
 				});
 			}
-			Err(e) => println!("accept error: {}", e),
+			Err(e)
+				if matches!(
+					e.kind(),
+					ErrorKind::NotFound
+						| ErrorKind::PermissionDenied
+						| ErrorKind::HostUnreachable
+						| ErrorKind::NetworkUnreachable
+						| ErrorKind::NotConnected
+						| ErrorKind::AddrInUse
+						| ErrorKind::AddrNotAvailable
+						| ErrorKind::NetworkDown
+						| ErrorKind::NotSeekable
+						| ErrorKind::QuotaExceeded
+						| ErrorKind::Unsupported
+						| ErrorKind::OutOfMemory
+				) =>
+			{
+				// fatal error, give up
+				if running_under_system_manager() {
+					sd_notify::notify(
+						false,
+						&[NotifyState::Errno(
+							e.raw_os_error().expect("expected a raw error") as u32,
+						)],
+					)
+					.expect("failed to notify system manager of fatal error");
+				}
+				panic!("got fatal error accepting connection: {}", e);
+			}
+			Err(e) => {
+				error!("failed to accept connection: {}", e);
+			}
 		}
 	}
+}
+
+/// Check whether we should initialize a watchdog
+///
+/// # Returns
+/// If a watchdog is required, returns a [`Duration`] specifying the time after which the
+/// service manager (systemd) will kill this process.
+///
+/// If no watchdog is required, returns [`None`].
+fn watchdog_required() -> Option<Duration> {
+	if !running_under_system_manager() {
+		return None;
+	}
+
+	let mut watchdog_delay = 0;
+	let enabled = sd_notify::watchdog_enabled(false, &mut watchdog_delay);
+
+	enabled.then(|| Duration::from_micros(watchdog_delay))
+}
+
+fn running_under_system_manager() -> bool {
+	sd_notify::booted().expect("failed to figure out whether we're on systemd")
+}
+
+/// Return the [`TcpListener`] we should listen on.
+///
+/// This will first try fetching the socket file descriptor and using that if it exists,
+/// before falling back to environment configuration and making one ourselves.
+async fn get_socket() -> TcpListener {
+	if running_under_system_manager() {
+		// see if we have one
+		let mut listeners = sd_notify::listen_fds()
+			.expect("failed to fetch sockets from system manager")
+			.collect::<Vec<_>>();
+
+		match listeners.len().cmp(&1) {
+			Ordering::Less => {
+				// fall through to making our own
+			}
+			Ordering::Equal => {
+				// this is our file descriptor
+				let Some(fd) = listeners.pop() else {
+					unreachable!(
+						"there is exactly one thing in the listeners array, we should always get \
+						 it"
+					);
+				};
+
+				info!("got raw listener {:?}", fd);
+				if !verify_fd_is_socket(fd) {
+					panic!("fd {} is not a socket, giving up", fd);
+				}
+				// SAFETY: we must trust that systemd has given us a valid TCP socket
+				let listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+
+				listener
+					.set_nonblocking(true)
+					.expect("couldn't set nonblocking on passed in TCP socket");
+
+				return TcpListener::from_std(listener)
+					.expect("couldn't convert std TcpListener to tokio TcpListener");
+			}
+			Ordering::Greater => {
+				panic!(
+					"got more than one file descriptor to listen on, but can only listen on one: \
+					 giving up! {:?}",
+					listeners
+				);
+			}
+		}
+	}
+
+	get_socket_from_env().await
+}
+
+/// Return true if `fd` is a socket.
+fn verify_fd_is_socket(fd: RawFd) -> bool {
+	let file_stat = nix::sys::stat::fstat(fd).expect("failed to check type of file descriptor");
+	(SFlag::from_bits(file_stat.st_mode).expect("st_mode should be a valid flag") & SFlag::S_IFMT)
+		== SFlag::S_IFSOCK
+}
+
+async fn get_socket_from_env() -> TcpListener {
+	if std::env::var("PORT").is_ok_and(|s| s.parse::<u16>().is_ok()) {
+		panic!(
+			"PORT is deprecated, use LISTEN_ADDR instead: this will panic until you set PORT to \
+			 something not a number or remove it"
+		)
+	}
+
+	let bind_addr = match std::env::var("BIND_ADDR") {
+		Ok(bind_addr) => SocketAddr::from_str(&bind_addr).expect("BIND_ADDR malformed"),
+		Err(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 7269),
+	};
+	info!("found bind address {}, opening listen socket", bind_addr);
+	let socket = TcpListener::bind(bind_addr)
+		.await
+		.expect("failed to open listen socket");
+	info!("opened socket");
+
+	socket
 }
