@@ -340,9 +340,8 @@ async fn get_socket() -> TcpListener {
 /// Return true if `fd` is a socket.
 fn verify_fd_is_socket(fd: RawFd) -> bool {
 	let file_stat = nix::sys::stat::fstat(fd).expect("failed to check type of file descriptor");
-	let is_socket = (SFlag::from_bits(file_stat.st_mode).expect("st_mode should be a valid flag")
-		& SFlag::S_IFMT)
-		== SFlag::S_IFSOCK;
+	let is_socket =
+		(file_stat.st_mode & SFlag::S_IFMT.bits() as u32) == SFlag::S_IFSOCK.bits() as u32;
 	if !is_socket {
 		return false;
 	}
