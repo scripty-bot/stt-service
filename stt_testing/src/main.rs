@@ -1,7 +1,7 @@
 use std::{
 	io,
 	io::{Read, Write},
-	net::{IpAddr, TcpStream},
+	net::{IpAddr, SocketAddr, TcpStream},
 	time::Instant,
 };
 
@@ -19,6 +19,7 @@ fn main() {
 	let test_file_path = std::env::args()
 		.nth(1)
 		.expect("first argument should be the path to the WAV file to test");
+	let maybe_target_address = std::env::args().nth(2);
 
 	let reader = hound::WavReader::open(test_file_path).expect("failed to open WAV file");
 	// sample rate must be 16000 Hz
@@ -38,8 +39,11 @@ fn main() {
 		.collect::<Vec<_>>();
 
 	// open a TCP socket from the client to the server
-	let mut socket = TcpStream::connect((IpAddr::from([127, 0, 0, 1]), 7269))
-		.expect("failed to connect to server");
+	let target_addr: SocketAddr = maybe_target_address.map_or_else(
+		|| (IpAddr::from([127, 0, 0, 1]), 7269).into(),
+		|t| t.parse().expect("failed to parse target address"),
+	);
+	let mut socket = TcpStream::connect(target_addr).expect("failed to connect to server");
 
 	// wait for the server to send a StatusConnectionOpen message
 	println!("waiting for initialization");
