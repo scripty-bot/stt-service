@@ -73,7 +73,7 @@ fn init_logging() {
 		);
 	let fenrir = builder.build();
 
-	Dispatch::new()
+	let mut logger = Dispatch::new()
 		.chain(
 			Dispatch::new()
 				// configure this logger instance to make a fancy, colorful output
@@ -109,8 +109,10 @@ fn init_logging() {
 				.level(tracing::log::LevelFilter::Trace)
 				// send this setup of log messages to Loki
 				.chain(Box::new(fenrir) as Box<dyn tracing::log::Log>),
-		)
-		.chain(
+		);
+
+	if !running_under_system_manager() {
+		logger = logger.chain(
 			Dispatch::new()
 				// configure this logger instance to make a slightly more informative output, but without colors
 				.format(move |out, message, record| {
@@ -143,9 +145,9 @@ fn init_logging() {
 						.open("output.log")
 						.expect("failed to open output.log"),
 				),
-		)
-		.apply()
-		.expect("failed to init logger");
+		);
+	}
+	logger.apply().expect("failed to init logger");
 }
 
 async fn main_inner() {
