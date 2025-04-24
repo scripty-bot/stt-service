@@ -290,7 +290,13 @@ async fn get_socket() -> TcpListener {
 
 		match listeners.len().cmp(&1) {
 			Ordering::Less => {
-				// fall through to making our own
+				// fall through to making our own unless we should error
+				if std::env::var("FAIL_IF_SOCKET_NOT_FOUND").is_ok() {
+					panic!(
+						"couldn't find a socket from system manager and FAIL_IF_SOCKET_NOT_FOUND \
+						 was set"
+					);
+				}
 			}
 			Ordering::Equal => {
 				// this is our file descriptor
