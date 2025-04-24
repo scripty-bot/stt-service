@@ -1,0 +1,9 @@
+[Unit]
+Description=Socket for STT service activation
+PartOf=scripty-stt-service.service
+
+[Socket]
+ListenStream=7269
+
+[Install]
+WantedBy=sockets.target

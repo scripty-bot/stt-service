@@ -15,23 +15,44 @@ substituting `opencl` for whatever you want.
 
 ## Running
 
-Grab a model from <https://github.com/ggerganov/whisper.cpp/blob/master/models/README.md>.
+Scripty's STT service is designed to integrate with systemd.
+Docker is possible but we offer limited support for it, and you have to figure that out yourself.
+These official steps will use systemd.
+
+Copy `target/release/scripty_stt_service` to `/usr/local/bin`.
+
+Grab a model from <https://github.com/ggml-org/whisper.cpp/blob/master/models/README.md>.
 Scripty uses `base` in production, and it runs about 4x faster than real time on a Ryzen 7 7700X.
 You can likely get away with only a `.en` model if you don't need multilingual transcription,
 but this is untested (we'll still support it if you run into issues!).
+You should place this model in `/usr/share/whisper-models`.
 
-Set an env var `LOKI_TARGET` to a URL where a Loki server can be found to push logs to.
-Technically, this doesn't need to work at all,
-and nothing bad will happen, so you can ignore it if you don't want to set up Loki.
-The only requirement is this variable is a valid URL.
+Modify `util/scripty-stt-service.service`, and change the following:
 
-If port 7269 is already bound on your system, set the `PORT` env var to a new port to bind to.
+* `Environment="LOKI_TARGET=http://127.0.0.1:3100/"`:
+  leave this as-is if you don't have Loki set up, or if it's running on localhost.
+  Otherwise, modify it to point to your Loki instance.
+* `ExecStart=/usr/local/bin/scripty_stt_service /usr/share/whisper-models/ggml-base-q5_1.bin 14 true`:
+    * modify the path to the whisper model if you have them stored somewhere else,
+      or change the name if you're not using the quantized base model.
+    * change the 14 to the number of threads you're willing to let the STT service use
+    * change true to false if you do not want Scripty to be able to overload this node with jobs
+      (do not change this if you don't know what you're doing and the consequences)
+* `ReadOnlyPaths=/usr/share/whisper-models/`:
+  if your models are stored somewhere besides `/usr/share/whisper-models`, modify this to that path.
 
-Run the binary with two or three arguments:
+Copy `util/scripty-stt-service.service` and `util/scripty-stt-service.socket` to `/etc/systemd/system`.
+If port 7269 is already bound on your system, edit `scripty-stt-service.socket` to change the listen port.
+To actually start it listening, run `sudo systemctl enable --now scripty-stt-service.socket`.
 
-* first argument should be the path to the STT model you downloaded above.
-* second argument should be the maximum number of concurrent transcriptions you wish
-  to support
-* optional third argument should be a boolean (`true` or `false`) dictating if Scripty is
-  allowed to overload this node with jobs: if this is your only node you likely want to set
-  this to true.
+You can use the testing binary in `stt_testing/` to test your setup.
+Run the following from the same directory as this README:
+
+```bash
+cd stt_testing/
+cargo build --release
+./target/release/stt_testing ../2830-3980-0043.wav
+```
+
+If this succeeds without error, and you get a result of "Experience proves this.", your setup is working!
+Continue onwards to setting up Scripty.
