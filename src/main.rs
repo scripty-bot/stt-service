@@ -167,7 +167,7 @@ async fn main_inner() {
 	);
 	info!("loaded models");
 
-	let socket = get_socket().await;
+	let socket = get_listen_socket().await;
 
 	let (shutdown_signal_tx, _shutdown_signal_rx) = tokio::sync::broadcast::channel(1);
 	let inner_shutdown_signal_tx = shutdown_signal_tx.clone();
@@ -287,7 +287,7 @@ fn running_under_system_manager() -> bool {
 ///
 /// This will first try fetching the socket file descriptor and using that if it exists,
 /// before falling back to environment configuration and making one ourselves.
-async fn get_socket() -> TcpListener {
+async fn get_listen_socket() -> TcpListener {
 	if running_under_system_manager() {
 		// see if we have one
 		let mut listeners = sd_notify::listen_fds()
