@@ -180,9 +180,13 @@ async fn main_inner() {
 			.expect("failed to send shutdown signal");
 	});
 
-	let watchdog_pet_interval =
-		watchdog_required().map_or_else(|| Duration::from_secs(u64::MAX), |interval| interval / 2);
-	let get_next_watchdog_pet_instant = || Instant::now() + watchdog_pet_interval;
+	let get_next_watchdog_pet_instant: Box<dyn Fn() -> Instant> =
+		if let Some(watchdog_pet_interval) = watchdog_required() {
+			let watchdog_pet_interval = watchdog_pet_interval / 2;
+			Box::new(move || Instant::now() + watchdog_pet_interval)
+		} else {
+			Box::new(|| Instant::now() + Duration::from_secs(u32::MAX as u64))
+		};
 
 	let stt_streams = Arc::new(DashMap::<Uuid, SttStreamingState>::new());
 	let mut next_watchdog_pet = get_next_watchdog_pet_instant();
