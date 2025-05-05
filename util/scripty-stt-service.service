@@ -9,6 +9,8 @@ Environment="RUST_LOG=info"
 Environment="LOKI_TARGET=http://127.0.0.1:3100/"
 Environment="FAIL_IF_SOCKET_NOT_FOUND=true"
 WatchdogSec=10
+# allow storing file descriptors across process restart
+FileDescriptorStoreMax=64
 
 DynamicUser=true
 RemoveIPC=yes
