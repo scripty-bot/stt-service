@@ -13,6 +13,7 @@ debug = "line-tables-only"
 members = [
     "stts_connection_handler",
     "stts_speech_to_text",
+    "stts_system_manager",
 ]
 exclude = [
     "stt_testing",
