@@ -1,3 +1,6 @@
+# ARCHIVED
+visit https://codeberg.org/scripty-bot/scripty for any new code
+
 # stt-service
 
 The Scripty STT service is a simple server that handles remote audio transcription.
